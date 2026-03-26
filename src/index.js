@@ -23,7 +23,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/auth',         require('./routes/auth'));
 app.use('/auth/tastytrade', require('./routes/tastytrade'));
 app.use('/api',          require('./routes/api'));
-app.use('/webhook',      require('./routes/webhook'));   // Phase 2
 
 // ─── Health check ─────────────────────────────────────────────
 app.get('/health', (req, res) => {
