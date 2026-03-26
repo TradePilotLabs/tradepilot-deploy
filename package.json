@@ -1,0 +1,14 @@
+{
+  "name": "tradepilot-automation",
+  "version": "1.0.0",
+  "description": "TradePilot automated trading server — deploy to Heroku",
+  "scripts": {
+    "start": "node node_modules/@tradepilot/ats/dist/index.js"
+  },
+  "dependencies": {
+    "@tradepilot/ats": "latest"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}

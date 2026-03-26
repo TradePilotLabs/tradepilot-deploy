@@ -1,0 +1,62 @@
+{
+  "name": "TradePilot Automation Server",
+  "description": "TradePilot automated options trading execution engine for SPY and QQQ 0DTE",
+  "repository": "https://github.com/tradepilotlabs/tradepilot-deploy",
+  "logo": "https://app.tradepilotlabs.com/logo.png",
+  "keywords": ["trading", "automation", "options", "tastytrade"],
+  "env": {
+    "NODE_ENV": {
+      "description": "Environment",
+      "value": "production"
+    },
+    "JWT_SECRET": {
+      "description": "Secret key for JWT tokens — click Generate to create one",
+      "generator": "secret"
+    },
+    "TASTY_CLIENT_ID": {
+      "description": "Your TastyTrade OAuth Client ID — get this from app.tradepilotlabs.com/settings"
+    },
+    "TASTY_CLIENT_SECRET": {
+      "description": "Your TastyTrade OAuth Client Secret — get this from app.tradepilotlabs.com/settings"
+    },
+    "TASTY_REDIRECT_URI": {
+      "description": "OAuth callback URL — set to https://YOUR-APP-NAME.herokuapp.com/auth/tastytrade/callback"
+    },
+    "DASHBOARD_URL": {
+      "description": "TradePilot dashboard URL",
+      "value": "https://app.tradepilotlabs.com"
+    },
+    "ATS_URL": {
+      "description": "This app's URL — set to https://YOUR-APP-NAME.herokuapp.com"
+    },
+    "TRADEPILOT_API_KEY": {
+      "description": "Your TradePilot API key — get this from app.tradepilotlabs.com/settings",
+      "generator": "secret"
+    }
+  },
+  "addons": [
+    {
+      "plan": "heroku-postgresql:essential-0",
+      "as": "DATABASE"
+    },
+    {
+      "plan": "rediscloud:30",
+      "as": "REDISCLOUD"
+    },
+    {
+      "plan": "papertrail:choklad",
+      "as": "PAPERTRAIL"
+    }
+  ],
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}
