@@ -76,9 +76,14 @@ router.post('/login', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   const webhookToken = await getWebhookToken(req.user.id);
   res.json({
-    user: { id: req.user.id, email: req.user.email, name: req.user.name },
+    user: {
+      id:       req.user.id,
+      email:    req.user.email,
+      name:     req.user.name,
+      is_admin: req.user.is_admin,   // ← make sure this line exists
+    },
     webhookToken,
-    webhookUrl: `${process.env.ATS_URL || 'https://ats.tradepilot.io'}/webhook/${webhookToken}`,
+    webhookUrl: `${process.env.ATS_URL || 'https://ats.tradepilotlabs.com'}/webhook/${webhookToken}`,
   });
 });
 

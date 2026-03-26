@@ -6,36 +6,33 @@ const {
   getDailyPnlHistory, getWebhookToken,
   savePreset, getPresets, deletePreset,
   isTastyConnected, getTastyTokens,
+  getStrategies, getStrategyBySlug, getSignalLog,
 } = require('../data/db');
 const { getOpenPositionsForUser } = require('../data/redis');
 
-// All routes require JWT auth
 router.use(requireAuth);
 
 // ─── Settings ─────────────────────────────────────────────────
 
-// GET /api/settings
 router.get('/settings', async (req, res) => {
   try {
     const settings = await getOrCreateSettings(req.user.id);
     res.json({ settings });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PATCH /api/settings
 router.patch('/settings', async (req, res) => {
   try {
     const allowed = [
       'trading_enabled', 'order_type', 'ticker_filter',
-      'alert_source', 'risk_allocation', 'max_capital_per_trade',
+      'alert_source', 'signal_source',
+      'risk_allocation', 'max_capital_per_trade',
       'max_trades_per_day', 'max_contract_cost', 'min_contract_cost',
       'stop_loss_pct',
       'kill_profit_enabled', 'kill_profit_type', 'kill_profit_value',
-      'kill_loss_enabled', 'kill_loss_type', 'kill_loss_value',
+      'kill_loss_enabled',   'kill_loss_type',   'kill_loss_value',
       'unreal_profit_enabled', 'unreal_profit_type', 'unreal_profit_value',
-      'unreal_loss_enabled', 'unreal_loss_type', 'unreal_loss_value',
+      'unreal_loss_enabled',   'unreal_loss_type',   'unreal_loss_value',
       'trailing_enabled', 'trailing_mode', 'trailing_trigger_pct',
       'trailing_pct', 'break_even_enabled', 'multi_tier_enabled',
       'schedule',
@@ -47,20 +44,16 @@ router.patch('/settings', async (req, res) => {
     await updateSettings(req.user.id, updates);
     const settings = await getOrCreateSettings(req.user.id);
     res.json({ settings });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ─── Presets ──────────────────────────────────────────────────
 
-// GET /api/presets
 router.get('/presets', async (req, res) => {
   const presets = await getPresets(req.user.id);
   res.json({ presets });
 });
 
-// POST /api/presets
 router.post('/presets', async (req, res) => {
   const { name, settings } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
@@ -68,85 +61,118 @@ router.post('/presets', async (req, res) => {
   res.status(201).json({ preset });
 });
 
-// DELETE /api/presets/:id
 router.delete('/presets/:id', async (req, res) => {
   await deletePreset(req.user.id, req.params.id);
   res.json({ deleted: true });
 });
 
-// ─── Trades & positions ───────────────────────────────────────
+// ─── Positions & trades ───────────────────────────────────────
 
-// GET /api/positions  — live open positions from Redis
 router.get('/positions', async (req, res) => {
   try {
     const positions = await getOpenPositionsForUser(req.user.id);
     res.json({ positions });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/trades?limit=50&offset=0
 router.get('/trades', async (req, res) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit  || 50, 10), 200);
+    const limit  = Math.min(parseInt(req.query.limit  || 50,  10), 200);
     const offset = parseInt(req.query.offset || 0, 10);
     const trades = await getTradeHistory(req.user.id, limit, offset);
     res.json({ trades });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/stats — dashboard overview numbers
+// ─── Stats ────────────────────────────────────────────────────
+
 router.get('/stats', async (req, res) => {
   try {
-    const [
-      openTrades,
-      todayPnl,
-      pnlHistory,
-      connected,
-    ] = await Promise.all([
+    const [openTrades, todayPnl, pnlHistory, connected] = await Promise.all([
       getOpenTrades(req.user.id),
       getTodayRealizedPnl(req.user.id),
       getDailyPnlHistory(req.user.id, 30),
       isTastyConnected(req.user.id),
     ]);
-
     const totalTrades = pnlHistory.reduce((s, d) => s + (d.trade_count || 0), 0);
-    const totalWins   = pnlHistory.reduce((s, d) => s + (d.win_count || 0), 0);
+    const totalWins   = pnlHistory.reduce((s, d) => s + (d.win_count   || 0), 0);
     const totalPnl    = pnlHistory.reduce((s, d) => s + parseFloat(d.total_pnl || 0), 0);
-
     res.json({
-      openTradeCount:  openTrades.length,
+      openTradeCount: openTrades.length,
       todayPnl,
-      totalPnl: parseFloat(totalPnl.toFixed(2)),
-      winRate: totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0,
+      totalPnl:    parseFloat(totalPnl.toFixed(2)),
+      winRate:     totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0,
       totalTrades,
       pnlHistory,
       tastyConnected: connected,
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/webhook-url — returns user's webhook URL
+// ─── Account ──────────────────────────────────────────────────
+
+router.get('/account', async (req, res) => {
+  const tokens = await getTastyTokens(req.user.id);
+  res.json({
+    connected:     !!tokens?.access_token,
+    accountNumber: tokens?.account_number || null,
+  });
+});
+
+// ─── Webhook URL ──────────────────────────────────────────────
+
 router.get('/webhook-url', async (req, res) => {
   const token = await getWebhookToken(req.user.id);
   res.json({
     token,
-    url: `${process.env.ATS_URL || 'https://ats.tradepilot.io'}/webhook/${token}`,
+    url: `${process.env.ATS_URL || 'https://ats.tradepilotlabs.com'}/webhook/${token}`,
   });
 });
 
-// GET /api/account — TastyTrade account info
-router.get('/account', async (req, res) => {
-  const tokens = await getTastyTokens(req.user.id);
-  res.json({
-    connected: !!tokens?.access_token,
-    accountNumber: tokens?.account_number || null,
-  });
+// ─── Strategies (Phase 3) ─────────────────────────────────────
+
+router.get('/strategies', async (req, res) => {
+  try {
+    const strategies = await getStrategies(true);
+    const safe = strategies.map(({ webhook_secret, ...s }) => s);
+    res.json({ strategies: safe });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Signal log (Phase 3) ────────────────────────────────────
+
+router.get('/signals', async (req, res) => {
+  try {
+    const limit   = Math.min(parseInt(req.query.limit || 50, 10), 200);
+    const signals = await getSignalLog(req.user.id, limit);
+    res.json({ signals });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Webhook info (Phase 3) ───────────────────────────────────
+
+router.get('/webhook-info', async (req, res) => {
+  try {
+    const [token, settings] = await Promise.all([
+      getWebhookToken(req.user.id),
+      getOrCreateSettings(req.user.id),
+    ]);
+    const isCustom = !settings.signal_source || settings.signal_source === 'custom';
+    let activeStrategy = null;
+    if (!isCustom) {
+      const s = await getStrategyBySlug(settings.signal_source);
+      if (s) { const { webhook_secret, ...safe } = s; activeStrategy = safe; }
+    }
+    res.json({
+      signalSource:   settings.signal_source || 'custom',
+      isCustom,
+      webhookUrl:     isCustom
+        ? `${process.env.ATS_URL || 'https://ats.tradepilotlabs.com'}/webhook/${token}`
+        : null,
+      webhookToken:   isCustom ? token : null,
+      activeStrategy,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 module.exports = router;

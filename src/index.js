@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
-const { connectDB } = require('./data/db');
+const cors    = require('cors');
+const { connectDB }    = require('./data/db');
 const { connectRedis } = require('./data/redis');
 
 const app = express();
@@ -20,11 +20,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Routes ───────────────────────────────────────────────────
-app.use('/auth',         require('./routes/auth'));
-app.use('/auth/tastytrade', require('./routes/tastytrade'));
-app.use('/api',          require('./routes/api'));
+app.use('/auth',             require('./routes/auth'));
+app.use('/auth/tastytrade',  require('./routes/tastytrade'));
+app.use('/api',              require('./routes/api'));
 
-// ─── Health check ─────────────────────────────────────────────
+// Phase 3 — strategy webhook MUST be before /webhook
+// so /webhook/strategy/:slug is matched correctly
+app.use('/webhook/strategy', require('./routes/strategyWebhook'));
+app.use('/webhook',          require('./routes/webhook'));
+
+// Phase 3 — admin panel API
+app.use('/admin',            require('./routes/admin'));
+
+// Phase 4 — morning mode / market condition
+app.use('/api/market-condition', require('./routes/marketCondition'));
+
+// ─── Health ───────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'TradePilot ATS', ts: new Date().toISOString() });
 });
@@ -43,22 +54,18 @@ async function start() {
   await connectDB();
   await connectRedis();
 
-  // Phase 2 — start position monitor and market close job
-  // These are imported lazily so Phase 1 boots without them
-  try {
-    const { startPositionMonitor } = require('./services/positionMonitor');
-    const { scheduleMarketClose }  = require('./jobs/marketClose');
-    startPositionMonitor();
-    scheduleMarketClose();
-  } catch (e) {
-    console.warn('Phase 2 services not yet available:', e.message);
-  }
+  const { startPositionMonitor } = require('./services/positionMonitor');
+  const { scheduleMarketClose }  = require('./jobs/marketClose');
+  startPositionMonitor();
+  scheduleMarketClose();
 
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`\n✈  TradePilot ATS running on port ${PORT}`);
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   Dashboard:   ${process.env.DASHBOARD_URL}`);
+    console.log(`   Environment  : ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Dashboard    : ${process.env.DASHBOARD_URL}`);
+    console.log(`   Strategy hook: ${process.env.ATS_URL}/webhook/strategy/<slug>?secret=<key>`);
+    console.log(`   Admin API    : ${process.env.ATS_URL}/admin`);
   });
 }
 
