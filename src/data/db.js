@@ -21,15 +21,6 @@ function getPool() {
 
 // ─── Users ────────────────────────────────────────────────────
 
-async function createUser({ email, passwordHash, name }) {
-  const { rows } = await getPool().query(
-    `INSERT INTO users (email, password_hash, name)
-     VALUES ($1, $2, $3) RETURNING id, email, name, created_at`,
-    [email.toLowerCase(), passwordHash, name]
-  );
-  return rows[0];
-}
-
 async function getUserByEmail(email) {
   const { rows } = await getPool().query(
     `SELECT * FROM users WHERE email = $1`, [email.toLowerCase()]
@@ -384,6 +375,209 @@ async function setAdminFlag(userId, isAdmin) {
   );
 }
 
+// ─── Updated createUser (with licenseKey) ────────────────────
+async function createUser({ email, passwordHash, name, licenseKey }) {
+  const { rows } = await getPool().query(
+    `INSERT INTO users (email, password_hash, name, license_key, subscription_status, is_active)
+     VALUES ($1, $2, $3, $4, 'inactive', true)
+     RETURNING id, email, name, license_key, is_admin, subscription_status, plan`,
+    [email.toLowerCase(), passwordHash, name, licenseKey || null]
+  );
+  return rows[0];
+}
+
+// ─── Password reset ───────────────────────────────────────────
+
+async function createPasswordResetToken(userId, token, expiresAt) {
+  // Invalidate any existing tokens for this user first
+  await getPool().query(
+    `UPDATE password_reset_tokens SET used = true WHERE user_id = $1 AND used = false`,
+    [userId]
+  );
+  await getPool().query(
+    `INSERT INTO password_reset_tokens (user_id, token, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, token, expiresAt]
+  );
+}
+
+async function getPasswordResetToken(token) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM password_reset_tokens WHERE token = $1`, [token]
+  );
+  return rows[0] || null;
+}
+
+async function markPasswordResetTokenUsed(token) {
+  await getPool().query(
+    `UPDATE password_reset_tokens SET used = true WHERE token = $1`, [token]
+  );
+}
+
+async function updateUserPassword(userId, passwordHash) {
+  await getPool().query(
+    `UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+    [userId, passwordHash]
+  );
+}
+
+async function updateUserLastLogin(userId, ip) {
+  await getPool().query(
+    `UPDATE users SET last_login_at = NOW(), last_login_ip = $2 WHERE id = $1`,
+    [userId, ip]
+  );
+}
+
+// ─── Subscription management ──────────────────────────────────
+
+async function updateUserSubscription(userId, {
+  stripeCustomerId, subscriptionId, subscriptionStatus, isActive, trialEndsAt
+}) {
+  const sets = [];
+  const vals = [userId];
+  let i = 2;
+  if (stripeCustomerId  !== undefined) { sets.push(`stripe_customer_id = $${i++}`);  vals.push(stripeCustomerId); }
+  if (subscriptionId    !== undefined) { sets.push(`subscription_id = $${i++}`);     vals.push(subscriptionId); }
+  if (subscriptionStatus!== undefined) { sets.push(`subscription_status = $${i++}`); vals.push(subscriptionStatus); }
+  if (isActive          !== undefined) { sets.push(`is_active = $${i++}`);           vals.push(isActive); }
+  if (trialEndsAt       !== undefined) { sets.push(`trial_ends_at = $${i++}`);       vals.push(trialEndsAt); }
+  if (!sets.length) return;
+  await getPool().query(
+    `UPDATE users SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $1`, vals
+  );
+}
+
+async function getUserByStripeCustomer(stripeCustomerId) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM users WHERE stripe_customer_id = $1`, [stripeCustomerId]
+  );
+  return rows[0] || null;
+}
+
+// ─── Broker connections ───────────────────────────────────────
+
+async function getBrokerConnections(userId) {
+  const { rows } = await getPool().query(
+    `SELECT bc.*, bs.trading_enabled, bs.signal_source
+     FROM broker_connections bc
+     LEFT JOIN broker_settings bs ON bs.broker_connection_id = bc.id
+     WHERE bc.user_id = $1
+     ORDER BY bc.is_primary DESC, bc.created_at ASC`,
+    [userId]
+  );
+  return rows;
+}
+
+async function getBrokerConnection(id, userId) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM broker_connections WHERE id = $1 AND user_id = $2`, [id, userId]
+  );
+  return rows[0] || null;
+}
+
+async function createBrokerConnection({
+  userId, broker, displayName, authType,
+  apiKeyEncrypted, apiSecretEncrypted, accountNumber, isPrimary
+}) {
+  const { rows } = await getPool().query(
+    `INSERT INTO broker_connections
+       (user_id, broker, display_name, auth_type,
+        api_key_encrypted, api_secret_encrypted,
+        account_number, is_primary, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')
+     RETURNING *`,
+    [userId, broker, displayName, authType,
+     apiKeyEncrypted, apiSecretEncrypted, accountNumber, isPrimary]
+  );
+  return rows[0];
+}
+
+async function updateBrokerConnection(id, updates) {
+  const fields = Object.keys(updates);
+  if (!fields.length) return;
+  const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+  const values    = fields.map(f => updates[f]);
+  const { rows }  = await getPool().query(
+    `UPDATE broker_connections SET ${setClause}, updated_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [id, ...values]
+  );
+  return rows[0];
+}
+
+async function deleteBrokerConnection(id, userId) {
+  await getPool().query(
+    `DELETE FROM broker_connections WHERE id = $1 AND user_id = $2`, [id, userId]
+  );
+}
+
+async function setPrimaryBroker(id, userId) {
+  await getPool().query(
+    `UPDATE broker_connections SET is_primary = false WHERE user_id = $1`, [userId]
+  );
+  await getPool().query(
+    `UPDATE broker_connections SET is_primary = true WHERE id = $1`, [id]
+  );
+}
+
+// ─── Broker settings ──────────────────────────────────────────
+
+async function getBrokerSettings(brokerConnectionId) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM broker_settings WHERE broker_connection_id = $1`,
+    [brokerConnectionId]
+  );
+  return rows[0] || null;
+}
+
+async function upsertBrokerSettings(brokerConnectionId, userId, settings) {
+  const existing = await getBrokerSettings(brokerConnectionId);
+  if (!existing) {
+    const { rows } = await getPool().query(
+      `INSERT INTO broker_settings (broker_connection_id, user_id)
+       VALUES ($1, $2) RETURNING *`,
+      [brokerConnectionId, userId]
+    );
+    return rows[0];
+  }
+  const allowed = [
+    'trading_enabled', 'order_type', 'ticker_filter',
+    'signal_source', 'alert_source', 'risk_allocation',
+    'max_capital_per_trade', 'max_trades_per_day',
+    'max_contract_cost', 'min_contract_cost', 'stop_loss_pct',
+    'kill_profit_enabled', 'kill_profit_type', 'kill_profit_value',
+    'kill_loss_enabled', 'kill_loss_type', 'kill_loss_value',
+    'unreal_profit_enabled', 'unreal_profit_type', 'unreal_profit_value',
+    'unreal_loss_enabled', 'unreal_loss_type', 'unreal_loss_value',
+    'trailing_enabled', 'trailing_mode', 'trailing_trigger_pct',
+    'trailing_pct', 'break_even_enabled', 'multi_tier_enabled', 'schedule',
+  ];
+  const updates = {};
+  for (const key of allowed) {
+    if (settings[key] !== undefined) updates[key] = settings[key];
+  }
+  if (!Object.keys(updates).length) return existing;
+  const fields    = Object.keys(updates);
+  const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
+  const values    = fields.map(f => updates[f]);
+  const { rows }  = await getPool().query(
+    `UPDATE broker_settings SET ${setClause}, updated_at = NOW()
+     WHERE broker_connection_id = $1 RETURNING *`,
+    [brokerConnectionId, ...values]
+  );
+  return rows[0];
+}
+
+// ─── Audit log ────────────────────────────────────────────────
+
+async function logAudit({ userId, action, detail, ip, userAgent }) {
+  await getPool().query(
+    `INSERT INTO audit_log (user_id, action, detail, ip_address, user_agent)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [userId || null, action, JSON.stringify(detail || {}), ip, userAgent]
+  ).catch(e => console.error('Audit log error:', e.message));
+}
+
 module.exports = {
   connectDB, getPool,
   // Users
@@ -408,4 +602,14 @@ module.exports = {
   logSignal, getSignalLog,
   // Admin
   getAllUsers, setAdminFlag,
+  // User Management
+  createPasswordResetToken, getPasswordResetToken,
+  markPasswordResetTokenUsed, updateUserPassword,
+  updateUserLastLogin, updateUserSubscription,
+  getUserByStripeCustomer,
+  getBrokerConnections, getBrokerConnection,
+  createBrokerConnection, updateBrokerConnection,
+  deleteBrokerConnection, setPrimaryBroker,
+  getBrokerSettings, upsertBrokerSettings,
+  logAudit,
 };

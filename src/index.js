@@ -16,6 +16,8 @@ app.use(cors({
   credentials: true,
 }));
 
+app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -48,6 +50,11 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+//phase 7
+app.use('/brokers',        require('./routes/brokers'));
+app.use('/billing',        require('./routes/billing'));
+app.use('/stripe/webhook', require('./routes/stripe'));
 
 // ─── Startup ──────────────────────────────────────────────────
 async function start() {
