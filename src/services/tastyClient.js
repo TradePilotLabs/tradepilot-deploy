@@ -1,7 +1,7 @@
 const axios = require('axios');
 const { getTastyTokens, updateTastyAccessToken } = require('../data/db');
 
-const BASE = 'https://api.tastytrade.com';
+const BASE = process.env.TASTY_API_BASE || 'https://api.tastytrade.com';
 
 // ─── Token refresh ────────────────────────────────────────────
 
