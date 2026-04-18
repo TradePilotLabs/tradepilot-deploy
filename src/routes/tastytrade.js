@@ -45,14 +45,17 @@ router.get('/callback', async (req, res) => {
   }
 
   try {
-    // Exchange code for tokens
-    const tokenRes = await axios.post(TASTY_TOKEN_URL, {
-      grant_type:    'authorization_code',
-      client_id:     process.env.TASTY_CLIENT_ID,
-      client_secret: process.env.TASTY_CLIENT_SECRET,
-      redirect_uri:  process.env.TASTY_REDIRECT_URI,
-      code,
-    });
+    // Exchange code for tokens — OAuth requires form-encoded body, not JSON
+    const tokenRes = await axios.post(TASTY_TOKEN_URL,
+      new URLSearchParams({
+        grant_type:    'authorization_code',
+        client_id:     process.env.TASTY_CLIENT_ID,
+        client_secret: process.env.TASTY_CLIENT_SECRET,
+        redirect_uri:  process.env.TASTY_REDIRECT_URI,
+        code,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
     const { access_token, refresh_token, expires_in } = tokenRes.data;
     const expiresAt = new Date(Date.now() + expires_in * 1000);
