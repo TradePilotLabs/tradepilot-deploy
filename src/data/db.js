@@ -568,6 +568,78 @@ async function upsertBrokerSettings(brokerConnectionId, userId, settings) {
   return rows[0];
 }
 
+// ─── Backtest signals ─────────────────────────────────────────
+
+async function getBacktestSignals({ strategySlug, from, to } = {}) {
+  const conds = [];
+  const vals  = [];
+  if (strategySlug) { conds.push(`strategy_slug = $${vals.length+1}`); vals.push(strategySlug); }
+  if (from)         { conds.push(`signal_time >= $${vals.length+1}`);  vals.push(from); }
+  if (to)           { conds.push(`signal_time <= $${vals.length+1}`);  vals.push(to); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const { rows } = await getPool().query(
+    `SELECT * FROM backtest_signals ${where} ORDER BY signal_time ASC`, vals
+  );
+  return rows;
+}
+
+async function countBacktestSignals() {
+  const { rows } = await getPool().query(
+    `SELECT strategy_slug, COUNT(*) as count,
+            MIN(signal_time) as earliest, MAX(signal_time) as latest
+     FROM backtest_signals GROUP BY strategy_slug ORDER BY strategy_slug`
+  );
+  return rows;
+}
+
+async function insertBacktestSignals(signals) {
+  if (!signals.length) return 0;
+  const vals    = [];
+  const clauses = signals.map((s, i) => {
+    const b = i * 9;
+    vals.push(s.strategy_slug, s.ticker, s.direction, s.signal_time,
+              s.exit_time, s.ask_price, s.exit_ask ?? null, s.outcome, s.option_symbol ?? null);
+    return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9})`;
+  });
+  await getPool().query(
+    `INSERT INTO backtest_signals
+       (strategy_slug, ticker, direction, signal_time, exit_time, ask_price, exit_ask, outcome, option_symbol)
+     VALUES ${clauses.join(',')}`, vals
+  );
+  return signals.length;
+}
+
+async function clearBacktestSignals(strategySlug) {
+  if (strategySlug) {
+    await getPool().query(`DELETE FROM backtest_signals WHERE strategy_slug = $1`, [strategySlug]);
+  } else {
+    await getPool().query(`DELETE FROM backtest_signals`);
+  }
+}
+
+// ─── Backtest presets ─────────────────────────────────────────
+
+async function saveBacktestPreset(userId, name, settings) {
+  const { rows } = await getPool().query(
+    `INSERT INTO backtest_presets (user_id, name, settings) VALUES ($1,$2,$3) RETURNING *`,
+    [userId, name, JSON.stringify(settings)]
+  );
+  return rows[0];
+}
+
+async function getBacktestPresets(userId) {
+  const { rows } = await getPool().query(
+    `SELECT * FROM backtest_presets WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
+  );
+  return rows;
+}
+
+async function deleteBacktestPreset(userId, id) {
+  await getPool().query(
+    `DELETE FROM backtest_presets WHERE id = $1 AND user_id = $2`, [id, userId]
+  );
+}
+
 // ─── Audit log ────────────────────────────────────────────────
 
 async function logAudit({ userId, action, detail, ip, userAgent }) {
@@ -612,4 +684,8 @@ module.exports = {
   deleteBrokerConnection, setPrimaryBroker,
   getBrokerSettings, upsertBrokerSettings,
   logAudit,
+  // Backtest
+  getBacktestSignals, countBacktestSignals,
+  insertBacktestSignals, clearBacktestSignals,
+  saveBacktestPreset, getBacktestPresets, deleteBacktestPreset,
 };

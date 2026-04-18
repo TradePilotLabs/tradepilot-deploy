@@ -37,6 +37,14 @@ app.use('/admin',            require('./routes/admin'));
 // Phase 4 — morning mode / market condition
 app.use('/api/market-condition', require('./routes/marketCondition'));
 
+// Phase 7 — brokers, billing, stripe
+app.use('/brokers',        require('./routes/brokers'));
+app.use('/billing',        require('./routes/billing'));
+app.use('/stripe/webhook', require('./routes/stripe'));
+
+// Backtest
+app.use('/backtest',       require('./routes/backtest'));
+
 // ─── Health ───────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'TradePilot ATS', ts: new Date().toISOString() });
@@ -50,11 +58,6 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
-
-//phase 7
-app.use('/brokers',        require('./routes/brokers'));
-app.use('/billing',        require('./routes/billing'));
-app.use('/stripe/webhook', require('./routes/stripe'));
 
 // ─── Startup ──────────────────────────────────────────────────
 async function start() {

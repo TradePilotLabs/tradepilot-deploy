@@ -4,6 +4,7 @@ const { requireAdmin } = require('../middleware/admin');
 const {
   getAllUsers, getStrategies, createStrategy,
   updateStrategy, deleteStrategy, getPool,
+  insertBacktestSignals, clearBacktestSignals, countBacktestSignals,
 } = require('../data/db');
 
 router.use(requireAuth, requireAdmin);
@@ -190,6 +191,53 @@ router.post('/bootstrap', async (req, res) => {
       `UPDATE users SET is_admin = true WHERE id = $1`, [payload.sub]
     );
     res.json({ success: true, message: 'You are now an admin' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Backtest signal management ───────────────────────────────
+
+// GET /admin/backtest/signals — counts per strategy
+router.get('/backtest/signals', async (req, res) => {
+  try {
+    const counts = await countBacktestSignals();
+    res.json({ counts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/backtest/signals — bulk upload signals
+// Body: { signals: [{ strategy_slug, ticker, direction, signal_time, exit_time, ask_price, exit_ask?, outcome, option_symbol? }] }
+router.post('/backtest/signals', async (req, res) => {
+  try {
+    const { signals, replace = false } = req.body;
+    if (!Array.isArray(signals) || !signals.length) {
+      return res.status(400).json({ error: 'signals array required' });
+    }
+    const required = ['strategy_slug','ticker','direction','signal_time','exit_time','ask_price','outcome'];
+    for (const s of signals) {
+      for (const f of required) {
+        if (!s[f]) return res.status(400).json({ error: `Missing field: ${f}` });
+      }
+    }
+    if (replace) {
+      const slug = signals[0].strategy_slug;
+      await clearBacktestSignals(slug);
+    }
+    const count = await insertBacktestSignals(signals);
+    res.json({ inserted: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /admin/backtest/signals/:slug — clear signals for a strategy
+router.delete('/backtest/signals/:slug', async (req, res) => {
+  try {
+    await clearBacktestSignals(req.params.slug);
+    res.json({ cleared: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

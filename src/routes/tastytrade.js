@@ -7,9 +7,21 @@ const TASTY_AUTH_URL  = 'https://api.tastytrade.com/oauth/authorize';
 const TASTY_TOKEN_URL = 'https://api.tastytrade.com/oauth/token';
 const TASTY_API_BASE  = 'https://api.tastytrade.com';
 
-// GET /tastytrade/connect?userId=xxx
-// Dashboard redirects user here → we send them to TastyTrade
-router.get('/connect', requireAuth, (req, res) => {
+// GET /tastytrade/connect — accepts JWT via ?token= query param (needed for browser redirects)
+router.get('/connect', async (req, res) => {
+  const jwt = require('jsonwebtoken');
+  const { getUserById } = require('../data/db');
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'Missing token' });
+  let user;
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    user = await getUserById(payload.sub);
+    if (!user) return res.status(401).json({ error: 'User not found' });
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  req.user = user;
   const params = new URLSearchParams({
     client_id:     process.env.TASTY_CLIENT_ID,
     redirect_uri:  process.env.TASTY_REDIRECT_URI,
