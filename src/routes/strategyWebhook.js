@@ -1,21 +1,19 @@
 const router = require('express').Router();
+const crypto = require('crypto');
 const { getStrategyBySlug } = require('../data/db');
 const { processStrategySignal } = require('../services/strategyRouter');
 
 /**
- * POST /webhook/strategy/:slug
+ * POST /webhook/strategy/:slug?secret=YOUR_SECRET
  *
- * This endpoint receives alerts from YOUR TradingView account
- * for managed strategies. It then fans the signal out to all
- * users subscribed to that strategy.
+ * Receives TradingView (or any platform) alerts for admin-managed strategies.
+ * Fans the signal out to all subscribed users.
  *
- * Secure with a webhook secret per strategy (set in admin panel).
- * Add ?secret=YOUR_SECRET to your TradingView webhook URL.
+ * Authentication: webhook_secret query param — ALWAYS required.
+ * Every strategy must have a webhook_secret set (auto-generated on creation).
+ * Use timing-safe comparison to prevent timing attacks.
  *
- * Example TradingView webhook URL:
- * https://ats.tradepilotlabs.com/webhook/strategy/dual-trend?secret=abc123
- *
- * TradingView alert message:
+ * TradingView alert message body:
  * {
  *   "ticker":  "{{ticker}}",
  *   "action":  "BUY_CALLS",
@@ -28,29 +26,36 @@ router.post('/:slug', async (req, res) => {
   const { slug }   = req.params;
   const { secret } = req.query;
 
+  // Always require secret — reject immediately if missing
+  if (!secret) {
+    return res.status(401).json({ error: 'Missing webhook secret' });
+  }
+
   try {
-    // Load strategy
     const strategy = await getStrategyBySlug(slug);
     if (!strategy || !strategy.active) {
       return res.status(404).json({ error: 'Strategy not found or inactive' });
     }
 
-    // Validate webhook secret if one is set
-    if (strategy.webhook_secret) {
-      if (!secret || secret !== strategy.webhook_secret) {
-        console.warn(`[STRATEGY WEBHOOK] Invalid secret for strategy: ${slug}`);
-        return res.status(401).json({ error: 'Invalid webhook secret' });
-      }
+    // Timing-safe comparison to prevent timing attacks
+    if (!strategy.webhook_secret) {
+      console.warn(`[STRATEGY WEBHOOK] Strategy ${slug} has no secret configured`);
+      return res.status(403).json({ error: 'Strategy webhook not configured' });
     }
 
-    // Fan signal out to all subscribers
+    const expected = Buffer.from(strategy.webhook_secret);
+    const provided = Buffer.from(secret);
+    const valid = expected.length === provided.length &&
+      crypto.timingSafeEqual(expected, provided);
+
+    if (!valid) {
+      console.warn(`[STRATEGY WEBHOOK] Invalid secret for strategy: ${slug}`);
+      return res.status(401).json({ error: 'Invalid webhook secret' });
+    }
+
     const results = await processStrategySignal(strategy, req.body);
 
-    res.json({
-      success:  true,
-      strategy: slug,
-      results,
-    });
+    res.json({ success: true, strategy: slug, results });
 
   } catch (err) {
     console.error(`[STRATEGY WEBHOOK] Error for ${slug}:`, err.message);

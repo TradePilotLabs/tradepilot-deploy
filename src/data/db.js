@@ -30,7 +30,10 @@ async function getUserByEmail(email) {
 
 async function getUserById(id) {
   const { rows } = await getPool().query(
-    `SELECT id, email, name, is_admin, created_at FROM users WHERE id = $1`, [id]
+    `SELECT id, email, name, is_admin, is_active, created_at,
+            subscription_status, plan, license_key, trial_ends_at,
+            stripe_customer_id, last_login_at
+     FROM users WHERE id = $1`, [id]
   );
   return rows[0] || null;
 }

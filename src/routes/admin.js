@@ -151,8 +151,48 @@ router.get('/strategies', async (req, res) => {
 // POST /admin/strategies
 router.post('/strategies', async (req, res) => {
   try {
-    const strategy = await createStrategy(req.body);
+    const crypto = require('crypto');
+    // Auto-generate a webhook secret if not provided
+    const data = {
+      ...req.body,
+      webhook_secret: req.body.webhook_secret || crypto.randomBytes(24).toString('hex'),
+    };
+    const strategy = await createStrategy(data);
     res.status(201).json({ strategy });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/strategies/:id/regenerate-secret — generate new webhook secret
+router.post('/strategies/:id/regenerate-secret', async (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const newSecret = crypto.randomBytes(24).toString('hex');
+    const strategy  = await updateStrategy(req.params.id, { webhook_secret: newSecret });
+    const atsUrl    = process.env.ATS_URL || '';
+    const webhookUrl = `${atsUrl}/webhook/strategy/${strategy.slug}?secret=${newSecret}`;
+    res.json({ strategy, webhook_url: webhookUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/strategies/:slug/fire — send a test signal to a strategy
+router.post('/strategies/:slug/fire', async (req, res) => {
+  try {
+    const { getStrategyBySlug } = require('../data/db');
+    const { processStrategySignal } = require('../services/strategyRouter');
+    const strategy = await getStrategyBySlug(req.params.slug);
+    if (!strategy) return res.status(404).json({ error: 'Strategy not found' });
+    const payload = req.body.payload || {
+      ticker: req.body.ticker || 'SPY',
+      action: req.body.action || 'BUY_CALLS',
+      signal: 'TEST',
+      price:  req.body.price || 500,
+    };
+    const results = await processStrategySignal(strategy, payload);
+    res.json({ fired: true, strategy: strategy.slug, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -195,6 +235,42 @@ router.post('/bootstrap', async (req, res) => {
       `UPDATE users SET is_admin = true WHERE id = $1`, [payload.sub]
     );
     res.json({ success: true, message: 'You are now an admin' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Test user creation ───────────────────────────────────────
+
+// POST /admin/create-test-user
+router.post('/create-test-user', async (req, res) => {
+  try {
+    const bcrypt = require('bcryptjs');
+    const { createUser, getUserByEmail, createWebhookToken } = require('../data/db');
+    const { generateLicenseKey } = require('../services/encryption');
+
+    const name  = req.body.name  || 'Test User';
+    const email = req.body.email || `test+${Date.now()}@tradepilotlabs.com`;
+    const pass  = req.body.password || 'TestPass123!';
+    const plan  = req.body.plan  || 'elite';
+    const subscriptionStatus = req.body.subscriptionStatus || 'active';
+
+    const existing = await getUserByEmail(email);
+    if (existing) return res.status(400).json({ error: `User ${email} already exists` });
+
+    const passwordHash = await bcrypt.hash(pass, 10);
+    const licenseKey   = generateLicenseKey();
+    const user = await createUser({ email, passwordHash, name, licenseKey });
+
+    // Set subscription status directly
+    await getPool().query(
+      `UPDATE users SET subscription_status = $2, plan = $3, is_active = true WHERE id = $1`,
+      [user.id, subscriptionStatus, plan]
+    );
+
+    await createWebhookToken(user.id);
+
+    res.json({ user: { id: user.id, email, name, password: pass, subscriptionStatus, plan, licenseKey } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
