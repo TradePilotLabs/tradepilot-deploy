@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_bt_signals_ticker ON backtest_signals(ticker);
 -- Per-user saved backtest configurations
 CREATE TABLE IF NOT EXISTS backtest_presets (
   id         SERIAL PRIMARY KEY,
-  user_id    INTEGER        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id    UUID           NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name       VARCHAR(100)   NOT NULL,
   settings   JSONB          NOT NULL,
   created_at TIMESTAMPTZ    DEFAULT NOW()
