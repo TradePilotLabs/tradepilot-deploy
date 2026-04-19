@@ -68,17 +68,20 @@ async function getWebhookToken(userId) {
 
 // ─── TastyTrade tokens ────────────────────────────────────────
 
-async function saveTastyTokens(userId, { accessToken, refreshToken, expiresAt, accountNumber }) {
+async function saveTastyTokens(userId, { accessToken, refreshToken, expiresAt, accountNumber, clientIdEncrypted, clientSecretEncrypted }) {
   await getPool().query(
-    `INSERT INTO tastytrade_tokens (user_id, access_token, refresh_token, expires_at, account_number)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO tastytrade_tokens
+       (user_id, access_token, refresh_token, expires_at, account_number, client_id_encrypted, client_secret_encrypted)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id) DO UPDATE SET
-       access_token   = $2,
-       refresh_token  = $3,
-       expires_at     = $4,
-       account_number = COALESCE($5, tastytrade_tokens.account_number),
-       updated_at     = NOW()`,
-    [userId, accessToken, refreshToken, expiresAt, accountNumber]
+       access_token           = $2,
+       refresh_token          = $3,
+       expires_at             = $4,
+       account_number         = COALESCE($5, tastytrade_tokens.account_number),
+       client_id_encrypted    = COALESCE($6, tastytrade_tokens.client_id_encrypted),
+       client_secret_encrypted= COALESCE($7, tastytrade_tokens.client_secret_encrypted),
+       updated_at             = NOW()`,
+    [userId, accessToken, refreshToken, expiresAt, accountNumber, clientIdEncrypted || null, clientSecretEncrypted || null]
   );
 }
 
@@ -100,7 +103,7 @@ async function updateTastyAccessToken(userId, accessToken, expiresAt) {
 
 async function isTastyConnected(userId) {
   const t = await getTastyTokens(userId);
-  return !!t?.access_token;
+  return !!t?.refresh_token;
 }
 
 // ─── User settings ────────────────────────────────────────────

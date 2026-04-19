@@ -134,13 +134,12 @@ router.post('/:id/validate', async (req, res) => {
     const connection = await getBrokerConnection(req.params.id, req.user.id);
     if (!connection) return res.status(404).json({ error: 'Connection not found' });
 
-    if (connection.broker === 'tastytrade' && connection.auth_type === 'oauth') {
+    if (connection.broker === 'tastytrade') {
       const tokens = await getTastyTokens(req.user.id);
-      if (!tokens?.access_token) {
+      if (!tokens?.refresh_token) {
         await updateBrokerConnection(req.params.id, { status: 'invalid', last_validated_at: new Date() });
-        return res.json({ valid: false, reason: 'No OAuth token found — reconnect TastyTrade' });
+        return res.json({ valid: false, reason: 'No credentials found — enter your TastyTrade credentials in Brokers' });
       }
-      // Try fetching accounts to validate the token
       try {
         const accounts = await getAccounts(req.user.id);
         const accountNumbers = accounts.map(a => a['account-number']);
@@ -148,7 +147,7 @@ router.post('/:id/validate', async (req, res) => {
         res.json({ valid: true, accounts: accountNumbers });
       } catch (e) {
         await updateBrokerConnection(req.params.id, { status: 'invalid', last_validated_at: new Date() });
-        res.json({ valid: false, reason: 'Token invalid or expired — reconnect TastyTrade' });
+        res.json({ valid: false, reason: 'Token refresh failed — re-enter your TastyTrade credentials' });
       }
     } else {
       res.json({ valid: true, reason: 'Validation not yet supported for this broker' });

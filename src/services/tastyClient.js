@@ -1,18 +1,27 @@
 const axios = require('axios');
 const { getTastyTokens, updateTastyAccessToken } = require('../data/db');
+const { decrypt } = require('./encryption');
 
 const BASE = process.env.TASTY_API_BASE || 'https://api.tastytrade.com';
 
 // ─── Token refresh ────────────────────────────────────────────
 
 async function refreshAccessToken(userId, tokens) {
+  const clientId     = decrypt(tokens.client_id_encrypted);
+  const clientSecret = decrypt(tokens.client_secret_encrypted);
+  if (!clientId || !clientSecret) {
+    throw new Error('TastyTrade client credentials missing — reconnect in Brokers settings');
+  }
   try {
-    const res = await axios.post(`${BASE}/oauth/token`, {
-      grant_type:    'refresh_token',
-      client_id:     process.env.TASTY_CLIENT_ID,
-      client_secret: process.env.TASTY_CLIENT_SECRET,
-      refresh_token: tokens.refresh_token,
-    });
+    const res = await axios.post(`${BASE}/oauth/token`,
+      new URLSearchParams({
+        grant_type:    'refresh_token',
+        client_id:     clientId,
+        client_secret: clientSecret,
+        refresh_token: tokens.refresh_token,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
     const { access_token, expires_in } = res.data;
     const expiresAt = new Date(Date.now() + expires_in * 1000);
     await updateTastyAccessToken(userId, access_token, expiresAt);

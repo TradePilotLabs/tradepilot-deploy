@@ -131,12 +131,16 @@ router.patch('/users/:id', async (req, res) => {
 // GET /admin/strategies
 router.get('/strategies', async (req, res) => {
   try {
+    const atsUrl = process.env.ATS_URL || '';
     const strategies = await getStrategies(false);
     const withCounts = await Promise.all(strategies.map(async s => {
       const { rows } = await getPool().query(
         `SELECT COUNT(*) FROM user_settings WHERE signal_source = $1`, [s.slug]
       );
-      return { ...s, subscriber_count: parseInt(rows[0].count) };
+      const webhookUrl = s.webhook_secret
+        ? `${atsUrl}/webhook/strategy/${s.slug}?secret=${s.webhook_secret}`
+        : `${atsUrl}/webhook/strategy/${s.slug}`;
+      return { ...s, subscriber_count: parseInt(rows[0].count), webhook_url: webhookUrl };
     }));
     res.json({ strategies: withCounts });
   } catch (err) {
