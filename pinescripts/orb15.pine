@@ -1,0 +1,119 @@
+//@version=5
+indicator(title="TradePilot ORB-15 Signal", shorttitle="TP ORB-15", overlay=true)
+
+// ═══════════════════════════════════════════════════════════════
+// TRADEPILOT — 15-MINUTE OPENING RANGE BREAKOUT
+// ═══════════════════════════════════════════════════════════════
+
+orbMinutes  = input.int(15,    "Opening Range Duration (minutes)", minval=5, maxval=30, group="ORB Settings")
+useVolume   = input.bool(true, "Require Volume Confirmation",      group="Filters")
+volMult     = input.float(1.1, "Volume Multiplier",  step=0.05,   group="Filters")
+useRSI      = input.bool(true, "Require RSI > 50 for calls",      group="Filters")
+rsiLen      = input.int(14,    "RSI Length",                       group="Filters")
+sessionEndH = input.int(15,    "Stop Trading Hour (ET)",           group="Session")
+sessionEndM = input.int(30,    "Stop Trading Minute (ET)",         group="Session")
+strikesOTM  = input.int(0,     "Strikes OTM (0 = ATM)",           group="Strike Settings")
+stopLossPct = input.float(50,  "Stop Loss %",        step=5,       group="Risk")
+webhookTag  = input.string("tradepilot-orb15", "Webhook Tag",      group="Webhook")
+
+// ─── TIME ─────────────────────────────────────────────────────
+toET(h, m)   => timestamp("America/New_York", year, month, dayofmonth, h, m)
+etNow        = timestamp("America/New_York", year, month, dayofmonth, hour, minute)
+marketOpen   = toET(9, 30)
+orbEnd       = toET(9, 30 + orbMinutes)
+sessionClose = toET(sessionEndH, sessionEndM)
+isORBWindow  = etNow >= marketOpen and etNow < orbEnd
+isTrading    = etNow >= orbEnd and etNow <= sessionClose
+isNewDay     = ta.change(dayofmonth) != 0
+
+// ─── OPENING RANGE ────────────────────────────────────────────
+var float orbHigh = na
+var float orbLow  = na
+var bool  orbSet  = false
+
+if isNewDay
+    orbHigh := na
+    orbLow  := na
+    orbSet  := false
+
+if isORBWindow
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow  := na(orbLow)  ? low  : math.min(orbLow,  low)
+
+if not isORBWindow and not na(orbHigh)
+    orbSet := true
+
+// ─── INDICATORS ───────────────────────────────────────────────
+[vwap, _, _] = ta.vwap(hlc3, false, 1)
+rsi          = ta.rsi(close, rsiLen)
+volAvg       = ta.sma(volume, 20)
+volSpike     = volume > volAvg * volMult
+ema9         = ta.ema(close, 9)
+
+// ─── SIGNALS ──────────────────────────────────────────────────
+breakoutUp   = orbSet and ta.crossover(close,  orbHigh)
+breakoutDown = orbSet and ta.crossunder(close, orbLow)
+
+rsiLongOK    = useRSI ? rsi > 50 : true
+rsiShortOK   = useRSI ? rsi < 50 : true
+volOK        = useVolume ? volSpike : true
+
+longCondition  = breakoutUp   and rsiLongOK  and volOK and isTrading
+shortCondition = breakoutDown and rsiShortOK and volOK and isTrading
+
+// ─── OPTION TICKERS ───────────────────────────────────────────
+expYear  = str.substring(str.tostring(year), 2, 4)
+expMonth = month < 10      ? "0" + str.tostring(month)      : str.tostring(month)
+expDay   = dayofmonth < 10 ? "0" + str.tostring(dayofmonth) : str.tostring(dayofmonth)
+
+callStrike  = math.round(close) + strikesOTM
+putStrike   = math.round(close) - strikesOTM
+longTicker  = syminfo.root + expYear + expMonth + expDay + "C" + str.tostring(callStrike) + ".0"
+shortTicker = syminfo.root + expYear + expMonth + expDay + "P" + str.tostring(putStrike)  + ".0"
+
+// ─── HELPERS ──────────────────────────────────────────────────
+fmtPrice(p) => na(p) ? "null" : str.tostring(math.round(p * 100) / 100)
+fmtTs()     => str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ssZ", syminfo.timezone)
+suggestedOption(root, exp, dir, strike) =>
+    root + " " + str.substring(expMonth, 0, 2) + "/" + expDay + " " + str.tostring(strike) + dir
+
+// ─── PLOTS ────────────────────────────────────────────────────
+plot(orbSet ? orbHigh : na, "ORB High", color=color.new(color.green, 0),  linewidth=2)
+plot(orbSet ? orbLow  : na, "ORB Low",  color=color.new(color.red,   0),  linewidth=2)
+plot(orbSet ? (orbHigh + orbLow) / 2 : na, "ORB Mid", color=color.new(color.gray, 50), linewidth=1)
+plot(vwap, "VWAP", color=color.new(color.purple, 0), linewidth=2)
+plot(ema9,  "EMA 9", color=color.new(color.blue, 30), linewidth=1)
+
+plotshape(longCondition,  "Long",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal, text="CALL")
+plotshape(shortCondition, "Short", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.normal, text="PUT")
+bgcolor(isORBWindow ? color.new(color.yellow, 90) : na, title="ORB Window")
+bgcolor(not isTrading and not isORBWindow ? color.new(color.gray, 92) : na, title="Outside Session")
+
+// ─── ALERTS ───────────────────────────────────────────────────
+if longCondition
+    longMsg = '{"timestamp":"' + fmtTs() + '","unmodifiedTicker":"' + longTicker + '","suggestedOption":"' + suggestedOption(syminfo.root, expDay, "c", callStrike) + '","action":"open","direction":"calls","source":"' + webhookTag + '","price":' + fmtPrice(close) + ',"volume":' + str.tostring(volume) + ',"stopLossPct":' + str.tostring(stopLossPct) + ',"orbHigh":' + fmtPrice(orbHigh) + ',"rsi":' + str.tostring(math.round(rsi * 10) / 10) + '}'
+    alert(longMsg, alert.freq_once_per_bar_close)
+
+if shortCondition
+    shortMsg = '{"timestamp":"' + fmtTs() + '","unmodifiedTicker":"' + shortTicker + '","suggestedOption":"' + suggestedOption(syminfo.root, expDay, "p", putStrike) + '","action":"open","direction":"puts","source":"' + webhookTag + '","price":' + fmtPrice(close) + ',"volume":' + str.tostring(volume) + ',"stopLossPct":' + str.tostring(stopLossPct) + ',"orbLow":' + fmtPrice(orbLow) + ',"rsi":' + str.tostring(math.round(rsi * 10) / 10) + '}'
+    alert(shortMsg, alert.freq_once_per_bar_close)
+
+// ─── TABLE ────────────────────────────────────────────────────
+var table t = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1, border_color=color.new(color.gray, 60))
+if barstate.islast
+    table.cell(t, 0, 0, "ORB-15 Status", text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 0, isORBWindow ? "BUILDING" : isTrading ? "ACTIVE" : "CLOSED",
+      text_color=isORBWindow ? color.yellow : isTrading ? color.green : color.red, text_size=size.small)
+    table.cell(t, 0, 1, "ORB High",    text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 1, orbSet ? str.tostring(math.round(orbHigh * 100) / 100) : "—", text_color=color.green, text_size=size.small)
+    table.cell(t, 0, 2, "ORB Low",     text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 2, orbSet ? str.tostring(math.round(orbLow * 100) / 100) : "—", text_color=color.red, text_size=size.small)
+    table.cell(t, 0, 3, "Range",       text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 3, orbSet ? str.tostring(math.round((orbHigh - orbLow) * 100) / 100) : "—", text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 4, "RSI",         text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 4, str.tostring(math.round(rsi * 10) / 10),
+      text_color=rsi > 55 ? color.green : rsi < 45 ? color.red : color.white, text_size=size.small)
+    table.cell(t, 0, 5, "Call Ticker", text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 5, longTicker,    text_color=color.green, text_size=size.small)
+    table.cell(t, 0, 6, "Put Ticker",  text_color=color.gray,  text_size=size.small)
+    table.cell(t, 1, 6, shortTicker,   text_color=color.red,   text_size=size.small)

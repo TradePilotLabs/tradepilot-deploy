@@ -109,6 +109,19 @@ async function isTastyConnected(userId) {
   return !!t?.refresh_token;
 }
 
+// Returns the first admin user with a live TastyTrade connection — used for system-level quote fetches
+async function getAnyTastyUserId() {
+  const { rows } = await getPool().query(
+    `SELECT tt.user_id FROM tastytrade_tokens tt
+     JOIN users u ON u.id = tt.user_id
+     WHERE tt.refresh_token IS NOT NULL
+       AND u.is_active = true
+     ORDER BY u.is_admin DESC, u.created_at ASC
+     LIMIT 1`
+  );
+  return rows[0]?.user_id || null;
+}
+
 // ─── User settings ────────────────────────────────────────────
 
 async function getOrCreateSettings(userId) {
@@ -623,6 +636,59 @@ async function clearBacktestSignals(strategySlug) {
   }
 }
 
+// ─── Webhook signal log ───────────────────────────────────────
+
+async function logWebhookSignal({
+  strategySlug, signalSource, ticker, direction, optionSymbol,
+  suggestedOption, action, stockPrice, optionAsk,
+  volume, stopLossPct, orbHigh, orbLow, rsi, rawPayload,
+}) {
+  await getPool().query(
+    `INSERT INTO webhook_signal_log
+       (strategy_slug, signal_source, ticker, direction, option_symbol,
+        suggested_option, action, stock_price, option_ask,
+        volume, stop_loss_pct, orb_high, orb_low, rsi, raw_payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [
+      strategySlug,
+      signalSource   || null,
+      ticker         || null,
+      direction      || null,
+      optionSymbol   || null,
+      suggestedOption|| null,
+      action         || null,
+      stockPrice     || null,
+      optionAsk      || null,
+      volume         ? parseInt(volume) : null,
+      stopLossPct    ? parseFloat(stopLossPct) : null,
+      orbHigh        ? parseFloat(orbHigh) : null,
+      orbLow         ? parseFloat(orbLow)  : null,
+      rsi            ? parseFloat(rsi)     : null,
+      JSON.stringify(rawPayload),
+    ]
+  );
+}
+
+async function getWebhookSignalLogs({ slug, limit = 200, offset = 0 } = {}) {
+  const where  = slug ? `WHERE strategy_slug = $3` : '';
+  const values = slug ? [limit, offset, slug] : [limit, offset];
+  const { rows } = await getPool().query(
+    `SELECT * FROM webhook_signal_log ${where}
+     ORDER BY signal_time DESC LIMIT $1 OFFSET $2`,
+    values
+  );
+  return rows;
+}
+
+async function countWebhookSignalLogs() {
+  const { rows } = await getPool().query(
+    `SELECT strategy_slug, COUNT(*) as count,
+            MIN(signal_time) as from, MAX(signal_time) as to
+     FROM webhook_signal_log GROUP BY strategy_slug ORDER BY strategy_slug`
+  );
+  return rows;
+}
+
 // ─── Backtest presets ─────────────────────────────────────────
 
 async function saveBacktestPreset(userId, name, settings) {
@@ -663,7 +729,7 @@ module.exports = {
   // Webhook tokens
   createWebhookToken, getUserByWebhookToken, getWebhookToken,
   // TastyTrade
-  saveTastyTokens, getTastyTokens, updateTastyAccessToken, isTastyConnected,
+  saveTastyTokens, getTastyTokens, updateTastyAccessToken, isTastyConnected, getAnyTastyUserId,
   // Settings
   getOrCreateSettings, updateSettings,
   // Trades
@@ -694,4 +760,6 @@ module.exports = {
   getBacktestSignals, countBacktestSignals,
   insertBacktestSignals, clearBacktestSignals,
   saveBacktestPreset, getBacktestPresets, deleteBacktestPreset,
+  // Webhook signal log
+  logWebhookSignal, getWebhookSignalLogs, countWebhookSignalLogs,
 };

@@ -5,6 +5,7 @@ const {
   getAllUsers, getStrategies, createStrategy,
   updateStrategy, deleteStrategy, getPool,
   insertBacktestSignals, clearBacktestSignals, countBacktestSignals,
+  getWebhookSignalLogs, countWebhookSignalLogs,
 } = require('../data/db');
 
 router.use(requireAuth, requireAdmin);
@@ -308,6 +309,20 @@ router.post('/backtest/signals', async (req, res) => {
     }
     const count = await insertBacktestSignals(signals);
     res.json({ inserted: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/webhook-signals — list logged signals (for backtest import)
+router.get('/webhook-signals', async (req, res) => {
+  try {
+    const { slug, limit = 200, offset = 0 } = req.query;
+    const [rows, counts] = await Promise.all([
+      getWebhookSignalLogs({ slug, limit: parseInt(limit), offset: parseInt(offset) }),
+      countWebhookSignalLogs(),
+    ]);
+    res.json({ signals: rows, counts });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
