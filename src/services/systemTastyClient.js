@@ -80,6 +80,7 @@ async function systemGet(path) {
       });
       return res.data;
     }
+    if (err.response?.status === 404) return null;
     const msg = err.response?.data?.error?.message || err.message;
     throw new Error(`TastyTrade system API [GET ${path}]: ${msg}`);
   }
@@ -121,11 +122,11 @@ async function checkConnection() {
   }
 
   try {
+    // Validate token by hitting a lightweight endpoint
     await getAccessToken();
-    // Test with a real quote fetch for a known symbol
-    const data = await systemGet('/market-data/quotes?symbols[]=' + encodeURIComponent('SPY   260620C00500000'));
-    const items = data?.data?.items || [];
-    return { ok: true, tokenCached: !!_cachedToken, quoteTestItems: items.length };
+    const data = await systemGet('/customers/me');
+    const email = data?.data?.email || data?.data?.['email'] || null;
+    return { ok: true, tokenCached: !!_cachedToken, account: email };
   } catch (err) {
     return { ok: false, reason: err.message };
   }
