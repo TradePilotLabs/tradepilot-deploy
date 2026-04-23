@@ -55,8 +55,11 @@ async function getAccessToken() {
     _tokenExpiry = Date.now() + (res.data.expires_in || 86400) * 1000;
     return _cachedToken;
   } catch (err) {
-    const detail = err.response?.data?.error_description || err.response?.data?.error || err.message;
-    throw new Error(`System TastyTrade token refresh failed: ${detail}`);
+    const body   = err.response?.data;
+    const detail = body?.error_description || body?.error || body?.message
+                || (body ? JSON.stringify(body) : err.message);
+    const status = err.response?.status ?? 'no-response';
+    throw new Error(`System TastyTrade token refresh failed [${status}]: ${detail}`);
   }
 }
 
@@ -117,15 +120,20 @@ async function checkConnection() {
   const clientSecret = process.env.TASTY_CLIENT_SECRET;
   const refreshToken = process.env.TASTY_REFRESH_TOKEN;
 
-  if (!clientId || !clientSecret || !refreshToken) {
-    return { ok: false, reason: 'TASTY_CLIENT_ID / TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set in config vars' };
+  const missing = [
+    !clientId     && 'TASTY_CLIENT_ID',
+    !clientSecret && 'TASTY_CLIENT_SECRET',
+    !refreshToken && 'TASTY_REFRESH_TOKEN',
+  ].filter(Boolean);
+
+  if (missing.length) {
+    return { ok: false, reason: `Missing env vars: ${missing.join(', ')}` };
   }
 
   try {
-    // Validate token by hitting a lightweight endpoint
     await getAccessToken();
-    const data = await systemGet('/customers/me');
-    const email = data?.data?.email || data?.data?.['email'] || null;
+    const data  = await systemGet('/customers/me');
+    const email = data?.data?.email || null;
     return { ok: true, tokenCached: !!_cachedToken, account: email };
   } catch (err) {
     return { ok: false, reason: err.message };
