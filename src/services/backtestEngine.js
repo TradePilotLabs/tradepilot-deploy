@@ -222,8 +222,11 @@ function runBacktest(signals, settings) {
       skippedSignals.push({ ...sig, skipReason: 'max_trades' }); continue;
     }
 
-    // Apply slippage to entry (worse fills)
-    const rawAsk     = parseFloat(sig.ask_price);
+    // Skip signals with no entry price
+    const rawAsk = parseFloat(sig.ask_price);
+    if (!rawAsk || isNaN(rawAsk) || rawAsk <= 0) {
+      skippedSignals.push({ ...sig, skipReason: 'missing_ask' }); continue;
+    }
     const entryPrice = parseFloat((rawAsk * (1 + slippage / 100)).toFixed(4));
 
     // Check contract cost limits

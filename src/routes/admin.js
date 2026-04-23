@@ -7,6 +7,7 @@ const {
   insertBacktestSignals, clearBacktestSignals, countBacktestSignals,
   getWebhookSignalLogs, countWebhookSignalLogs,
 } = require('../data/db');
+const { checkConnection: checkTastyConnection } = require('../services/systemTastyClient');
 
 router.use(requireAuth, requireAdmin);
 
@@ -297,7 +298,7 @@ router.post('/backtest/signals', async (req, res) => {
     if (!Array.isArray(signals) || !signals.length) {
       return res.status(400).json({ error: 'signals array required' });
     }
-    const required = ['strategy_slug','ticker','direction','signal_time','exit_time','ask_price','outcome'];
+    const required = ['strategy_slug','ticker','direction','signal_time','exit_time','outcome'];
     for (const s of signals) {
       for (const f of required) {
         if (!s[f]) return res.status(400).json({ error: `Missing field: ${f}` });
@@ -309,6 +310,52 @@ router.post('/backtest/signals', async (req, res) => {
     }
     const count = await insertBacktestSignals(signals);
     res.json({ inserted: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/backtest/sync-from-log — server-side sync: webhook_signal_log → backtest_signals
+router.post('/backtest/sync-from-log', async (req, res) => {
+  try {
+    const { slug, replace = true } = req.body;
+    const logs = await getWebhookSignalLogs({ slug, limit: 5000 });
+
+    const signals = logs
+      .filter(l => l.ticker && l.direction)
+      .map(l => {
+        const d = new Date(l.signal_time);
+        const exitTime = new Date(Date.UTC(
+          d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0
+        )).toISOString();
+        return {
+          strategy_slug: l.strategy_slug,
+          ticker:        l.ticker,
+          direction:     l.direction,
+          signal_time:   l.signal_time,
+          exit_time:     exitTime,
+          ask_price:     l.option_ask ? parseFloat(l.option_ask) : null,
+          exit_ask:      null,
+          outcome:       'market_close',
+          option_symbol: l.option_symbol || null,
+        };
+      });
+
+    if (!signals.length) return res.json({ synced: 0, message: 'No signals to sync' });
+    if (replace && slug) await clearBacktestSignals(slug);
+    else if (replace)   await clearBacktestSignals();
+    const synced = await insertBacktestSignals(signals);
+    res.json({ synced });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/tasty-check — verify system TastyTrade credentials and quote fetch
+router.get('/tasty-check', async (req, res) => {
+  try {
+    const result = await checkTastyConnection();
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
