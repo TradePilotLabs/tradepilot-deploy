@@ -106,23 +106,13 @@ async function getAccessToken() {
 // ─── Core GET wrapper ─────────────────────────────────────────
 
 async function systemGet(path) {
-  let token = await getAccessToken();
+  const token = await getAccessToken();
   try {
     const res = await axios.get(BASE + path, {
       headers: { Authorization: token, 'Content-Type': 'application/json' },
     });
     return res.data;
   } catch (err) {
-    if (err.response?.status === 401) {
-      // Force token refresh and retry once
-      _cachedToken = null;
-      _tokenExpiry  = 0;
-      token = await getAccessToken();
-      const res = await axios.get(BASE + path, {
-        headers: { Authorization: token, 'Content-Type': 'application/json' },
-      });
-      return res.data;
-    }
     if (err.response?.status === 404) return null;
     const msg = err.response?.data?.error?.message || err.message;
     throw new Error(`TastyTrade system API [GET ${path}]: ${msg}`);
@@ -182,10 +172,12 @@ async function checkConnection() {
   })()) : null;
 
   try {
+    // Just confirm the token exchange itself works — that's all we need
     await getAccessToken();
-    const data  = await systemGet('/customers/me');
-    const email = data?.data?.email || null;
-    return { ok: true, tokenCached: !!_cachedToken, account: email, tokenSource };
+    // Verify market-data scope works with a simple equity quote
+    const data   = await systemGet('/market-data/quotes?symbols[]=SPY');
+    const spyAsk = data?.data?.items?.[0]?.ask ?? data?.data?.items?.[0]?.['ask-price'] ?? null;
+    return { ok: true, tokenCached: !!_cachedToken, tokenSource, spyAsk };
   } catch (err) {
     return {
       ok: false,
