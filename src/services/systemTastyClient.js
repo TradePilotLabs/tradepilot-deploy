@@ -146,9 +146,9 @@ async function getOptionAsk(tvSymbol) {
 // ─── Health check ─────────────────────────────────────────────
 
 async function checkConnection() {
-  const clientId     = process.env.TASTY_CLIENT_ID;
-  const clientSecret = process.env.TASTY_CLIENT_SECRET;
-  const refreshToken = process.env.TASTY_REFRESH_TOKEN;
+  const clientId     = process.env.TASTY_CLIENT_ID?.trim();
+  const clientSecret = process.env.TASTY_CLIENT_SECRET?.trim();
+  const refreshToken = (await getStoredRefreshToken())?.trim();
 
   const missing = [
     !clientId     && 'TASTY_CLIENT_ID',
@@ -160,16 +160,12 @@ async function checkConnection() {
     return { ok: false, reason: `Missing env vars: ${missing.join(', ')}` };
   }
 
-  const clientId     = process.env.TASTY_CLIENT_ID?.trim();
-  const clientSecret = process.env.TASTY_CLIENT_SECRET?.trim();
-  const refreshToken = (await getStoredRefreshToken())?.trim();
-  const tokenSource  = refreshToken ? (await (async () => {
-    try {
-      const { getPool } = require('../data/db');
-      const { rows } = await getPool().query(`SELECT value FROM system_config WHERE key = 'tasty_refresh_token'`);
-      return rows[0]?.value ? 'db' : 'env';
-    } catch { return 'env'; }
-  })()) : null;
+  let tokenSource = 'env';
+  try {
+    const { getPool } = require('../data/db');
+    const { rows } = await getPool().query(`SELECT value FROM system_config WHERE key = 'tasty_refresh_token'`);
+    if (rows[0]?.value) tokenSource = 'db';
+  } catch {}
 
   try {
     // Just confirm the token exchange itself works — that's all we need
