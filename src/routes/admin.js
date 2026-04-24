@@ -5,9 +5,11 @@ const {
   getAllUsers, getStrategies, createStrategy,
   updateStrategy, deleteStrategy, getPool,
   insertBacktestSignals, clearBacktestSignals, countBacktestSignals,
+  updateBacktestSignalEnrichment, getUnenrichedBacktestSignals,
   getWebhookSignalLogs, countWebhookSignalLogs,
 } = require('../data/db');
 const { checkConnection: checkTastyConnection } = require('../services/systemTastyClient');
+const { enrichSignalBars, checkConnection: checkPolygonConnection } = require('../services/polygonClient');
 
 router.use(requireAuth, requireAdmin);
 
@@ -347,6 +349,46 @@ router.post('/backtest/sync-from-log', async (req, res) => {
     const synced = await insertBacktestSignals(signals);
     res.json({ synced });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/polygon-check — verify Polygon.io API key
+router.get('/polygon-check', async (req, res) => {
+  try {
+    const result = await checkPolygonConnection();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /admin/backtest/enrich — fetch Polygon intraday bars for unenriched signals
+// Body: { slug? }  — omit slug to enrich all strategies
+router.post('/backtest/enrich', async (req, res) => {
+  try {
+    const { slug } = req.body;
+    const signals  = await getUnenrichedBacktestSignals(slug);
+
+    if (!signals.length) return res.json({ enriched: 0, skipped: 0, message: 'All signals already enriched' });
+
+    let enriched = 0;
+    let skipped  = 0;
+
+    for (const sig of signals) {
+      // Small delay to avoid hitting Polygon rate limits on free tier
+      if (enriched > 0) await new Promise(r => setTimeout(r, 250));
+
+      const bars = await enrichSignalBars(sig);
+      if (!bars) { skipped++; continue; }
+
+      await updateBacktestSignalEnrichment(sig.id, bars);
+      enriched++;
+    }
+
+    res.json({ enriched, skipped, total: signals.length });
+  } catch (err) {
+    console.error('[ENRICH]', err.message);
     res.status(500).json({ error: err.message });
   }
 });

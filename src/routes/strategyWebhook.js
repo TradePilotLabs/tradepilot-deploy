@@ -2,7 +2,19 @@ const router = require('express').Router();
 const crypto = require('crypto');
 const { getStrategyBySlug, logWebhookSignal, insertBacktestSignals } = require('../data/db');
 const { processStrategySignal } = require('../services/strategyRouter');
-const { getOptionAsk } = require('../services/systemTastyClient');
+const polygon   = require('../services/polygonClient');
+const tastySystem = require('../services/systemTastyClient');
+
+async function fetchOptionAsk(tvSymbol) {
+  if (!tvSymbol) return null;
+  // Polygon is primary — simpler auth, no rotating tokens
+  if (process.env.POLYGON_API_KEY) {
+    const ask = await polygon.getOptionAsk(tvSymbol).catch(() => null);
+    if (ask) return ask;
+  }
+  // Fall back to TastyTrade system client
+  return tastySystem.getOptionAsk(tvSymbol).catch(() => null);
+}
 
 function extractSignalMeta(slug, body) {
   const optSym  = body.unmodifiedTicker || body.option_symbol || null;
@@ -82,10 +94,7 @@ router.post('/:slug', async (req, res) => {
       // Use ask from payload if sent; otherwise fetch from system TastyTrade client
       let optionAsk = meta.optionAsk;
       if (!optionAsk && meta.optionSymbol) {
-        optionAsk = await getOptionAsk(meta.optionSymbol).catch(err => {
-          console.warn('[OPTION ASK]', err.message);
-          return null;
-        });
+        optionAsk = await fetchOptionAsk(meta.optionSymbol);
       }
       if (optionAsk) console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
 

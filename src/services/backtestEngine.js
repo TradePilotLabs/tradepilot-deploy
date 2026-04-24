@@ -12,8 +12,51 @@
 
 const { isSkipDay } = require('../data/marketEvents');
 
-// TastyTrade round-trip fee per contract (clearing + ORF + regulatory)
 const TASTY_FEE_PER_CONTRACT = 0.60;
+
+// Determines outcome and exit price for a market_close signal using
+// Polygon-enriched session high/low data. Handles any user TP/SL %.
+function resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct) {
+  const sig  = t.signal;
+  const high = sig.session_high_ask != null ? parseFloat(sig.session_high_ask) : null;
+  const low  = sig.session_low_ask  != null ? parseFloat(sig.session_low_ask)  : null;
+
+  if (high !== null && low !== null) {
+    const tpThreshold = t.entryPrice * (1 + takeProfitPct / 100);
+    const slThreshold = t.entryPrice * (1 - stopLossPct  / 100);
+    const tpHit = high >= tpThreshold;
+    const slHit = low  <= slThreshold;
+
+    if (tpHit && slHit) {
+      // Both thresholds crossed — whichever bar timestamp came first wins
+      const tpFirst = new Date(sig.session_high_time) <= new Date(sig.session_low_time);
+      if (tpFirst) {
+        const pct = takeProfitPct / 100;
+        return { outcome: 'take_profit', pnlPct: pct,
+                 exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+      } else {
+        const pct = -stopLossPct / 100;
+        return { outcome: 'stop_loss', pnlPct: pct,
+                 exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+      }
+    }
+    if (tpHit) {
+      const pct = takeProfitPct / 100;
+      return { outcome: 'take_profit', pnlPct: pct,
+               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+    }
+    if (slHit) {
+      const pct = -stopLossPct / 100;
+      return { outcome: 'stop_loss', pnlPct: pct,
+               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+    }
+  }
+
+  // No TP/SL hit — use actual market close price
+  const exitAsk = parseFloat(sig.exit_ask) || t.entryPrice;
+  return { outcome: 'market_close', pnlPct: (exitAsk - t.entryPrice) / t.entryPrice,
+           exitPrice: exitAsk };
+}
 
 function toDateStr(ts) {
   return new Date(ts).toISOString().slice(0, 10);
@@ -132,11 +175,11 @@ function runBacktest(signals, settings) {
           exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
           grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
         } else {
-          // market_close or time_limit — use actual exit_ask if available, else 0 change
-          const exitAsk = parseFloat(t.signal.exit_ask) || t.entryPrice;
-          exitPrice = exitAsk;
-          grossPnl  = t.contracts * (exitAsk - t.entryPrice) * 100;
-          pnlPct    = (exitAsk - t.entryPrice) / t.entryPrice;
+          const resolved = resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct);
+          exitPrice = resolved.exitPrice;
+          pnlPct    = resolved.pnlPct;
+          grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
+          t.outcome = resolved.outcome;
         }
 
         if (includeBrokerFees) {
@@ -279,9 +322,11 @@ function runBacktest(signals, settings) {
       exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
       grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
     } else {
-      exitPrice = exitAsk;
-      grossPnl  = t.contracts * (exitAsk - t.entryPrice) * 100;
-      pnlPct    = (exitAsk - t.entryPrice) / t.entryPrice;
+      const resolved = resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct);
+      exitPrice = resolved.exitPrice;
+      pnlPct    = resolved.pnlPct;
+      grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
+      t.outcome = resolved.outcome;
     }
 
     const fees   = includeBrokerFees ? t.contracts * TASTY_FEE_PER_CONTRACT : 0;

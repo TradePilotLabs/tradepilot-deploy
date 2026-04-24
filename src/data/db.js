@@ -628,6 +628,29 @@ async function insertBacktestSignals(signals) {
   return signals.length;
 }
 
+async function updateBacktestSignalEnrichment(id, { sessionHighAsk, sessionLowAsk, sessionHighTime, sessionLowTime, exitAsk }) {
+  await getPool().query(
+    `UPDATE backtest_signals
+     SET session_high_ask  = $2,
+         session_low_ask   = $3,
+         session_high_time = $4,
+         session_low_time  = $5,
+         exit_ask          = COALESCE($6, exit_ask)
+     WHERE id = $1`,
+    [id, sessionHighAsk, sessionLowAsk, sessionHighTime, sessionLowTime, exitAsk ?? null]
+  );
+}
+
+async function getUnenrichedBacktestSignals(slug) {
+  const where = slug ? 'WHERE strategy_slug = $1 AND session_high_ask IS NULL AND option_symbol IS NOT NULL'
+                     : 'WHERE session_high_ask IS NULL AND option_symbol IS NOT NULL';
+  const vals  = slug ? [slug] : [];
+  const { rows } = await getPool().query(
+    `SELECT * FROM backtest_signals ${where} ORDER BY signal_time DESC`, vals
+  );
+  return rows;
+}
+
 async function clearBacktestSignals(strategySlug) {
   if (strategySlug) {
     await getPool().query(`DELETE FROM backtest_signals WHERE strategy_slug = $1`, [strategySlug]);
@@ -759,6 +782,7 @@ module.exports = {
   // Backtest
   getBacktestSignals, countBacktestSignals,
   insertBacktestSignals, clearBacktestSignals,
+  updateBacktestSignalEnrichment, getUnenrichedBacktestSignals,
   saveBacktestPreset, getBacktestPresets, deleteBacktestPreset,
   // Webhook signal log
   logWebhookSignal, getWebhookSignalLogs, countWebhookSignalLogs,
