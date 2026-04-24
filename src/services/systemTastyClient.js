@@ -24,6 +24,34 @@ const BASE = process.env.TASTY_API_BASE || 'https://api.tastytrade.com';
 let _cachedToken  = null;
 let _tokenExpiry  = 0;
 
+// ─── Refresh token persistence (survives rotation + dyno restarts) ────────────
+
+async function getStoredRefreshToken() {
+  try {
+    const { getPool } = require('../data/db');
+    const { rows } = await getPool().query(
+      `SELECT value FROM system_config WHERE key = 'tasty_refresh_token'`
+    );
+    if (rows[0]?.value) return rows[0].value;
+  } catch {}
+  // Fall back to env var — used on first bootstrap before DB has been seeded
+  return process.env.TASTY_REFRESH_TOKEN || null;
+}
+
+async function persistRefreshToken(token) {
+  try {
+    const { getPool } = require('../data/db');
+    await getPool().query(
+      `INSERT INTO system_config (key, value, updated_at)
+       VALUES ('tasty_refresh_token', $1, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+      [token]
+    );
+  } catch (e) {
+    console.warn('[SYSTEM TASTY] Failed to persist refresh token to DB:', e.message);
+  }
+}
+
 // ─── Token management ─────────────────────────────────────────
 
 async function getAccessToken() {
@@ -31,12 +59,17 @@ async function getAccessToken() {
 
   const clientId     = process.env.TASTY_CLIENT_ID;
   const clientSecret = process.env.TASTY_CLIENT_SECRET;
-  const refreshToken = process.env.TASTY_REFRESH_TOKEN;
+  const refreshToken = await getStoredRefreshToken();
 
-  if (!clientId || !clientSecret || !refreshToken) {
+  if (!clientId || !clientSecret) {
     throw new Error(
-      'System TastyTrade credentials not configured — set TASTY_CLIENT_ID, ' +
-      'TASTY_CLIENT_SECRET, and TASTY_REFRESH_TOKEN in Heroku config vars'
+      'System TastyTrade credentials not configured — set TASTY_CLIENT_ID and ' +
+      'TASTY_CLIENT_SECRET in Heroku config vars'
+    );
+  }
+  if (!refreshToken) {
+    throw new Error(
+      'No system refresh token available — set TASTY_REFRESH_TOKEN in Heroku config vars for initial bootstrap'
     );
   }
 
@@ -51,8 +84,15 @@ async function getAccessToken() {
       }),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
+
     _cachedToken = res.data.access_token;
     _tokenExpiry = Date.now() + (res.data.expires_in || 86400) * 1000;
+
+    // TastyTrade rotates refresh tokens — persist the new one immediately
+    if (res.data.refresh_token) {
+      await persistRefreshToken(res.data.refresh_token);
+    }
+
     return _cachedToken;
   } catch (err) {
     const body   = err.response?.data;
