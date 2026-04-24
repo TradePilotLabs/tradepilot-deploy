@@ -57,9 +57,9 @@ async function persistRefreshToken(token) {
 async function getAccessToken() {
   if (_cachedToken && Date.now() < _tokenExpiry - 60_000) return _cachedToken;
 
-  const clientId     = process.env.TASTY_CLIENT_ID;
-  const clientSecret = process.env.TASTY_CLIENT_SECRET;
-  const refreshToken = await getStoredRefreshToken();
+  const clientId     = process.env.TASTY_CLIENT_ID?.trim();
+  const clientSecret = process.env.TASTY_CLIENT_SECRET?.trim();
+  const refreshToken = (await getStoredRefreshToken())?.trim();
 
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -170,13 +170,34 @@ async function checkConnection() {
     return { ok: false, reason: `Missing env vars: ${missing.join(', ')}` };
   }
 
+  const clientId     = process.env.TASTY_CLIENT_ID?.trim();
+  const clientSecret = process.env.TASTY_CLIENT_SECRET?.trim();
+  const refreshToken = (await getStoredRefreshToken())?.trim();
+  const tokenSource  = refreshToken ? (await (async () => {
+    try {
+      const { getPool } = require('../data/db');
+      const { rows } = await getPool().query(`SELECT value FROM system_config WHERE key = 'tasty_refresh_token'`);
+      return rows[0]?.value ? 'db' : 'env';
+    } catch { return 'env'; }
+  })()) : null;
+
   try {
     await getAccessToken();
     const data  = await systemGet('/customers/me');
     const email = data?.data?.email || null;
-    return { ok: true, tokenCached: !!_cachedToken, account: email };
+    return { ok: true, tokenCached: !!_cachedToken, account: email, tokenSource };
   } catch (err) {
-    return { ok: false, reason: err.message };
+    return {
+      ok: false,
+      reason: err.message,
+      debug: {
+        hasClientId:     !!clientId,
+        hasClientSecret: !!clientSecret,
+        hasRefreshToken: !!refreshToken,
+        refreshTokenLen: refreshToken?.length ?? 0,
+        tokenSource,
+      },
+    };
   }
 }
 
