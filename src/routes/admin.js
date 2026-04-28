@@ -4,12 +4,11 @@ const { requireAdmin } = require('../middleware/admin');
 const {
   getAllUsers, getStrategies, createStrategy,
   updateStrategy, deleteStrategy, getPool,
-  insertBacktestSignals, clearBacktestSignals, countBacktestSignals,
-  updateBacktestSignalEnrichment, getUnenrichedBacktestSignals,
+  countBacktestSignals,
   getWebhookSignalLogs, countWebhookSignalLogs,
 } = require('../data/db');
 const { checkConnection: checkTastyConnection } = require('../services/systemTastyClient');
-const { enrichSignalBars, checkConnection: checkPolygonConnection } = require('../services/polygonClient');
+const { checkConnection: checkPolygonConnection } = require('../services/polygonClient');
 
 router.use(requireAuth, requireAdmin);
 
@@ -282,72 +281,11 @@ router.post('/create-test-user', async (req, res) => {
 
 // ─── Backtest signal management ───────────────────────────────
 
-// GET /admin/backtest/signals — counts per strategy
+// GET /admin/backtest/signals — signal counts per strategy (from webhook_signal_log)
 router.get('/backtest/signals', async (req, res) => {
   try {
     const counts = await countBacktestSignals();
     res.json({ counts });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /admin/backtest/signals — bulk upload signals
-// Body: { signals: [{ strategy_slug, ticker, direction, signal_time, exit_time, ask_price, exit_ask?, outcome, option_symbol? }] }
-router.post('/backtest/signals', async (req, res) => {
-  try {
-    const { signals, replace = false } = req.body;
-    if (!Array.isArray(signals) || !signals.length) {
-      return res.status(400).json({ error: 'signals array required' });
-    }
-    const required = ['strategy_slug','ticker','direction','signal_time','exit_time','outcome'];
-    for (const s of signals) {
-      for (const f of required) {
-        if (!s[f]) return res.status(400).json({ error: `Missing field: ${f}` });
-      }
-    }
-    if (replace) {
-      const slug = signals[0].strategy_slug;
-      await clearBacktestSignals(slug);
-    }
-    const count = await insertBacktestSignals(signals);
-    res.json({ inserted: count });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /admin/backtest/sync-from-log — server-side sync: webhook_signal_log → backtest_signals
-router.post('/backtest/sync-from-log', async (req, res) => {
-  try {
-    const { slug, replace = true } = req.body;
-    const logs = await getWebhookSignalLogs({ slug, limit: 5000 });
-
-    const signals = logs
-      .filter(l => l.ticker && l.direction)
-      .map(l => {
-        const d = new Date(l.signal_time);
-        const exitTime = new Date(Date.UTC(
-          d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0
-        )).toISOString();
-        return {
-          strategy_slug: l.strategy_slug,
-          ticker:        l.ticker,
-          direction:     l.direction,
-          signal_time:   l.signal_time,
-          exit_time:     exitTime,
-          ask_price:     l.option_ask ? parseFloat(l.option_ask) : null,
-          exit_ask:      null,
-          outcome:       'market_close',
-          option_symbol: l.option_symbol || null,
-        };
-      });
-
-    if (!signals.length) return res.json({ synced: 0, message: 'No signals to sync' });
-    if (replace && slug) await clearBacktestSignals(slug);
-    else if (replace)   await clearBacktestSignals();
-    const synced = await insertBacktestSignals(signals);
-    res.json({ synced });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -359,36 +297,6 @@ router.get('/polygon-check', async (req, res) => {
     const result = await checkPolygonConnection();
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /admin/backtest/enrich — fetch Polygon intraday bars for unenriched signals
-// Body: { slug? }  — omit slug to enrich all strategies
-router.post('/backtest/enrich', async (req, res) => {
-  try {
-    const { slug } = req.body;
-    const signals  = await getUnenrichedBacktestSignals(slug);
-
-    if (!signals.length) return res.json({ enriched: 0, skipped: 0, message: 'All signals already enriched' });
-
-    let enriched = 0;
-    let skipped  = 0;
-
-    for (const sig of signals) {
-      // Small delay to avoid hitting Polygon rate limits on free tier
-      if (enriched > 0) await new Promise(r => setTimeout(r, 250));
-
-      const bars = await enrichSignalBars(sig);
-      if (!bars) { skipped++; continue; }
-
-      await updateBacktestSignalEnrichment(sig.id, bars);
-      enriched++;
-    }
-
-    res.json({ enriched, skipped, total: signals.length });
-  } catch (err) {
-    console.error('[ENRICH]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -412,16 +320,6 @@ router.get('/webhook-signals', async (req, res) => {
       countWebhookSignalLogs(),
     ]);
     res.json({ signals: rows, counts });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE /admin/backtest/signals/:slug — clear signals for a strategy
-router.delete('/backtest/signals/:slug', async (req, res) => {
-  try {
-    await clearBacktestSignals(req.params.slug);
-    res.json({ cleared: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

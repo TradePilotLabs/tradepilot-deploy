@@ -75,52 +75,16 @@ async function getOptionMinuteBars(polygonSym, fromMs, toMs) {
   }
 }
 
-// ─── Signal enrichment ────────────────────────────────────────
-//
-// Fetches intraday minute bars for a backtest signal and computes:
-//   sessionHighAsk  — highest trade price after entry
-//   sessionLowAsk   — lowest trade price after entry
-//   sessionHighTime — when the high was reached
-//   sessionLowTime  — when the low was reached
-//   exitAsk         — price at market close (last bar close)
-//
-// The backtest engine uses these to determine whether the user's
-// TP or SL was hit first, regardless of what % they configured.
+// ─── Bars for a signal (used by backtest engine at run time) ─────────────────
 
-async function enrichSignalBars(signal) {
+async function getBarsForSignal(signal) {
   const sym = toPolygonSymbol(signal.option_symbol);
-  if (!sym || !signal.signal_time) return null;
-
+  if (!sym || !signal.signal_time) return [];
   const entryMs      = new Date(signal.signal_time).getTime();
   const d            = new Date(signal.signal_time);
   const sessionEndMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0);
-
   const bars = await getOptionMinuteBars(sym, entryMs, sessionEndMs);
-
-  // Only bars at or after the entry bar
-  const relevant = bars.filter(b => b.t >= entryMs - 60_000);
-  if (!relevant.length) return null;
-
-  let sessionHighAsk  = null;
-  let sessionLowAsk   = null;
-  let sessionHighTime = null;
-  let sessionLowTime  = null;
-
-  for (const bar of relevant) {
-    if (sessionHighAsk === null || bar.h > sessionHighAsk) {
-      sessionHighAsk  = bar.h;
-      sessionHighTime = new Date(bar.t).toISOString();
-    }
-    if (sessionLowAsk === null || bar.l < sessionLowAsk) {
-      sessionLowAsk  = bar.l;
-      sessionLowTime = new Date(bar.t).toISOString();
-    }
-  }
-
-  const lastBar = relevant[relevant.length - 1];
-  const exitAsk = lastBar?.c ?? null;
-
-  return { sessionHighAsk, sessionLowAsk, sessionHighTime, sessionLowTime, exitAsk };
+  return bars.filter(b => b.t >= entryMs - 60_000);
 }
 
 // ─── Health check ─────────────────────────────────────────────
@@ -145,4 +109,4 @@ async function checkConnection() {
   }
 }
 
-module.exports = { toPolygonSymbol, getOptionAsk, getOptionMinuteBars, enrichSignalBars, checkConnection };
+module.exports = { toPolygonSymbol, getOptionAsk, getOptionMinuteBars, getBarsForSignal, checkConnection };

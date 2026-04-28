@@ -1,7 +1,8 @@
 const router = require('express').Router();
-const { requireAuth }   = require('../middleware/auth');
-const { runBacktest }   = require('../services/backtestEngine');
-const { EVENT_COUNTS }  = require('../data/marketEvents');
+const { requireAuth }      = require('../middleware/auth');
+const { runBacktest }      = require('../services/backtestEngine');
+const { getBarsForSignal } = require('../services/polygonClient');
+const { EVENT_COUNTS }     = require('../data/marketEvents');
 const {
   getBacktestSignals, countBacktestSignals,
   saveBacktestPreset, getBacktestPresets, deleteBacktestPreset,
@@ -40,6 +41,16 @@ router.post('/run', async (req, res) => {
         trades:  [],
         message: 'No signals found for the selected strategy and date range.',
       });
+    }
+
+    // Fetch Polygon intraday bars for each signal live — used by engine to
+    // simulate when TP or SL was hit. Runs sequentially with a small delay
+    // to avoid hitting Polygon rate limits on lower-tier plans.
+    for (const sig of signals) {
+      if (sig.option_symbol) {
+        sig._bars = await getBarsForSignal(sig).catch(() => []);
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
 
     const results = runBacktest(signals, settings);

@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const crypto = require('crypto');
-const { getStrategyBySlug, logWebhookSignal, insertBacktestSignals } = require('../data/db');
+const { getStrategyBySlug, logWebhookSignal } = require('../data/db');
 const { processStrategySignal } = require('../services/strategyRouter');
 const polygon   = require('../services/polygonClient');
 const tastySystem = require('../services/systemTastyClient');
@@ -42,10 +42,6 @@ function extractSignalMeta(slug, body) {
   };
 }
 
-function computeExitTime(signalTime) {
-  const d = new Date(signalTime);
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0)).toISOString();
-}
 
 /**
  * POST /webhook/strategy/:slug?secret=YOUR_SECRET
@@ -96,24 +92,12 @@ router.post('/:slug', async (req, res) => {
       if (!optionAsk && meta.optionSymbol) {
         optionAsk = await fetchOptionAsk(meta.optionSymbol);
       }
-      if (optionAsk) console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
-
-      await logWebhookSignal({ ...meta, optionAsk });
-
-      if (meta.ticker && meta.direction) {
-        await insertBacktestSignals([{
-          strategy_slug: slug,
-          ticker:        meta.ticker,
-          direction:     meta.direction,
-          signal_time:   signalTime,
-          exit_time:     computeExitTime(signalTime),
-          ask_price:     optionAsk || null,
-          exit_ask:      null,
-          outcome:       'market_close',
-          option_symbol: meta.optionSymbol || null,
-        }]);
-        console.log(`[BACKTEST SYNC] ${slug} ${meta.ticker} ${meta.direction} ask=${optionAsk ?? 'null'}`);
+      if (!optionAsk) {
+        console.warn(`[SIGNAL LOG] Discarded ${slug} — could not fetch option ask for ${meta.optionSymbol}`);
+        return;
       }
+      console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
+      await logWebhookSignal({ ...meta, optionAsk });
     };
     logWithAsk().catch(e => console.warn('[SIGNAL LOG]', e.message));
 

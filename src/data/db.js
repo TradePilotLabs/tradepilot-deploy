@@ -587,17 +587,16 @@ async function upsertBrokerSettings(brokerConnectionId, userId, settings) {
   return rows[0];
 }
 
-// ─── Backtest signals ─────────────────────────────────────────
+// ─── Backtest signals (sourced directly from webhook_signal_log) ──────────────
 
 async function getBacktestSignals({ strategySlug, from, to } = {}) {
-  const conds = [];
+  const conds = ['ticker IS NOT NULL', 'direction IS NOT NULL'];
   const vals  = [];
   if (strategySlug) { conds.push(`strategy_slug = $${vals.length+1}`); vals.push(strategySlug); }
   if (from)         { conds.push(`signal_time >= $${vals.length+1}`);  vals.push(from); }
   if (to)           { conds.push(`signal_time <= $${vals.length+1}`);  vals.push(to); }
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const { rows } = await getPool().query(
-    `SELECT * FROM backtest_signals ${where} ORDER BY signal_time ASC`, vals
+    `SELECT * FROM webhook_signal_log WHERE ${conds.join(' AND ')} ORDER BY signal_time ASC`, vals
   );
   return rows;
 }
@@ -606,58 +605,13 @@ async function countBacktestSignals() {
   const { rows } = await getPool().query(
     `SELECT strategy_slug, COUNT(*) as count,
             MIN(signal_time) as earliest, MAX(signal_time) as latest
-     FROM backtest_signals GROUP BY strategy_slug ORDER BY strategy_slug`
+     FROM webhook_signal_log
+     WHERE ticker IS NOT NULL AND direction IS NOT NULL
+     GROUP BY strategy_slug ORDER BY strategy_slug`
   );
   return rows;
 }
 
-async function insertBacktestSignals(signals) {
-  if (!signals.length) return 0;
-  const vals    = [];
-  const clauses = signals.map((s, i) => {
-    const b = i * 9;
-    vals.push(s.strategy_slug, s.ticker, s.direction, s.signal_time,
-              s.exit_time, s.ask_price, s.exit_ask ?? null, s.outcome, s.option_symbol ?? null);
-    return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9})`;
-  });
-  await getPool().query(
-    `INSERT INTO backtest_signals
-       (strategy_slug, ticker, direction, signal_time, exit_time, ask_price, exit_ask, outcome, option_symbol)
-     VALUES ${clauses.join(',')}`, vals
-  );
-  return signals.length;
-}
-
-async function updateBacktestSignalEnrichment(id, { sessionHighAsk, sessionLowAsk, sessionHighTime, sessionLowTime, exitAsk }) {
-  await getPool().query(
-    `UPDATE backtest_signals
-     SET session_high_ask  = $2,
-         session_low_ask   = $3,
-         session_high_time = $4,
-         session_low_time  = $5,
-         exit_ask          = COALESCE($6, exit_ask)
-     WHERE id = $1`,
-    [id, sessionHighAsk, sessionLowAsk, sessionHighTime, sessionLowTime, exitAsk ?? null]
-  );
-}
-
-async function getUnenrichedBacktestSignals(slug) {
-  const where = slug ? 'WHERE strategy_slug = $1 AND session_high_ask IS NULL AND option_symbol IS NOT NULL'
-                     : 'WHERE session_high_ask IS NULL AND option_symbol IS NOT NULL';
-  const vals  = slug ? [slug] : [];
-  const { rows } = await getPool().query(
-    `SELECT * FROM backtest_signals ${where} ORDER BY signal_time DESC`, vals
-  );
-  return rows;
-}
-
-async function clearBacktestSignals(strategySlug) {
-  if (strategySlug) {
-    await getPool().query(`DELETE FROM backtest_signals WHERE strategy_slug = $1`, [strategySlug]);
-  } else {
-    await getPool().query(`DELETE FROM backtest_signals`);
-  }
-}
 
 // ─── Webhook signal log ───────────────────────────────────────
 
@@ -781,8 +735,6 @@ module.exports = {
   logAudit,
   // Backtest
   getBacktestSignals, countBacktestSignals,
-  insertBacktestSignals, clearBacktestSignals,
-  updateBacktestSignalEnrichment, getUnenrichedBacktestSignals,
   saveBacktestPreset, getBacktestPresets, deleteBacktestPreset,
   // Webhook signal log
   logWebhookSignal, getWebhookSignalLogs, countWebhookSignalLogs,

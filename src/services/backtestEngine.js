@@ -14,48 +14,35 @@ const { isSkipDay } = require('../data/marketEvents');
 
 const TASTY_FEE_PER_CONTRACT = 0.60;
 
-// Determines outcome and exit price for a market_close signal using
-// Polygon-enriched session high/low data. Handles any user TP/SL %.
+// Walks Polygon minute bars to find the first bar where TP or SL was crossed.
+// Each bar has { t (ms), o, h, l, c }. h/l tell us the range within that minute.
+// If both TP and SL are crossed in the same bar, SL wins (conservative).
 function resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct) {
-  const sig  = t.signal;
-  const high = sig.session_high_ask != null ? parseFloat(sig.session_high_ask) : null;
-  const low  = sig.session_low_ask  != null ? parseFloat(sig.session_low_ask)  : null;
+  const bars = t.signal._bars || [];
+  const tpThreshold = t.entryPrice * (1 + takeProfitPct / 100);
+  const slThreshold = t.entryPrice * (1 - stopLossPct  / 100);
 
-  if (high !== null && low !== null) {
-    const tpThreshold = t.entryPrice * (1 + takeProfitPct / 100);
-    const slThreshold = t.entryPrice * (1 - stopLossPct  / 100);
-    const tpHit = high >= tpThreshold;
-    const slHit = low  <= slThreshold;
-
-    if (tpHit && slHit) {
-      // Both thresholds crossed — whichever bar timestamp came first wins
-      const tpFirst = new Date(sig.session_high_time) <= new Date(sig.session_low_time);
-      if (tpFirst) {
-        const pct = takeProfitPct / 100;
-        return { outcome: 'take_profit', pnlPct: pct,
-                 exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
-      } else {
-        const pct = -stopLossPct / 100;
-        return { outcome: 'stop_loss', pnlPct: pct,
-                 exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
-      }
+  for (const bar of bars) {
+    const tpHit = bar.h >= tpThreshold;
+    const slHit = bar.l <= slThreshold;
+    if (slHit) {
+      // SL wins when both hit same bar (can't know intra-bar order; be conservative)
+      const pct = -stopLossPct / 100;
+      return { outcome: 'stop_loss', pnlPct: pct,
+               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
     }
     if (tpHit) {
       const pct = takeProfitPct / 100;
       return { outcome: 'take_profit', pnlPct: pct,
                exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
     }
-    if (slHit) {
-      const pct = -stopLossPct / 100;
-      return { outcome: 'stop_loss', pnlPct: pct,
-               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
-    }
   }
 
-  // No TP/SL hit — use actual market close price
-  const exitAsk = parseFloat(sig.exit_ask) || t.entryPrice;
-  return { outcome: 'market_close', pnlPct: (exitAsk - t.entryPrice) / t.entryPrice,
-           exitPrice: exitAsk };
+  // Neither hit — closed at last bar price (market close)
+  const exitPrice = bars.length ? bars[bars.length - 1].c : t.entryPrice;
+  return { outcome: 'market_close',
+           pnlPct: (exitPrice - t.entryPrice) / t.entryPrice,
+           exitPrice };
 }
 
 function toDateStr(ts) {
@@ -265,8 +252,8 @@ function runBacktest(signals, settings) {
       skippedSignals.push({ ...sig, skipReason: 'max_trades' }); continue;
     }
 
-    // Skip signals with no entry price
-    const rawAsk = parseFloat(sig.ask_price);
+    // Skip signals with no entry price (webhook_signal_log uses option_ask)
+    const rawAsk = parseFloat(sig.option_ask ?? sig.ask_price);
     if (!rawAsk || isNaN(rawAsk) || rawAsk <= 0) {
       skippedSignals.push({ ...sig, skipReason: 'missing_ask' }); continue;
     }
@@ -284,8 +271,10 @@ function runBacktest(signals, settings) {
       skippedSignals.push({ ...sig, skipReason: 'insufficient_capital' }); continue;
     }
 
-    // Determine exit time (apply time limit if configured)
-    let exitTime = new Date(sig.exit_time);
+    // Exit time defaults to 3:44 PM ET same day (standard 0DTE close)
+    const d = new Date(signalTime);
+    const defaultExit = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0));
+    let exitTime = sig.exit_time ? new Date(sig.exit_time) : defaultExit;
     if (activeTimeLimitMin) {
       const limitedExit = new Date(signalTime.getTime() + activeTimeLimitMin * 60000);
       if (limitedExit < exitTime) {
