@@ -257,6 +257,11 @@ function runBacktest(signals, settings) {
     if (!rawAsk || isNaN(rawAsk) || rawAsk <= 0) {
       skippedSignals.push({ ...sig, skipReason: 'missing_ask' }); continue;
     }
+
+    // Skip signals with no Polygon bars — can't simulate TP/SL without price path
+    if (!sig._bars || !sig._bars.length) {
+      skippedSignals.push({ ...sig, skipReason: 'no_price_data' }); continue;
+    }
     const entryPrice = parseFloat((rawAsk * (1 + slippage / 100)).toFixed(4));
 
     // Check contract cost limits
@@ -434,6 +439,9 @@ function runBacktest(signals, settings) {
       totalFees:       parseFloat(totalFees.toFixed(2)),
       totalTrades:     closedTrades.length,
       skippedTrades:   skippedSignals.length,
+      skipReasons: skippedSignals.reduce((acc, s) => {
+        acc[s.skipReason] = (acc[s.skipReason] || 0) + 1; return acc;
+      }, {}),
       winningTrades:   wins.length,
       losingTrades:    losses.length,
       winRate:         closedTrades.length ? parseFloat((wins.length / closedTrades.length * 100).toFixed(1)) : 0,

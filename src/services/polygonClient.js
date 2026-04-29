@@ -69,8 +69,15 @@ async function getOptionMinuteBars(polygonSym, fromMs, toMs) {
         timeout: 10000,
       }
     );
-    return res.data?.results || [];
-  } catch {
+    const bars = res.data?.results || [];
+    if (!bars.length) {
+      console.warn(`[POLYGON] No bars returned for ${polygonSym} ${from} — status: ${res.data?.status}, resultsCount: ${res.data?.resultsCount}`);
+    }
+    return bars;
+  } catch (err) {
+    const status  = err.response?.status;
+    const message = err.response?.data?.error || err.message;
+    console.error(`[POLYGON] getOptionMinuteBars failed for ${polygonSym}: [${status}] ${message}`);
     return [];
   }
 }
