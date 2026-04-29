@@ -92,11 +92,11 @@ router.post('/:slug', async (req, res) => {
       if (!optionAsk && meta.optionSymbol) {
         optionAsk = await fetchOptionAsk(meta.optionSymbol);
       }
-      if (!optionAsk) {
-        console.warn(`[SIGNAL LOG] Discarded ${slug} — could not fetch option ask for ${meta.optionSymbol}`);
-        return;
+      if (optionAsk) {
+        console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
+      } else {
+        console.warn(`[SIGNAL LOG] ${meta.optionSymbol} — option ask unavailable, storing signal without price`);
       }
-      console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
       await logWebhookSignal({ ...meta, optionAsk });
     };
     logWithAsk().catch(e => console.warn('[SIGNAL LOG]', e.message));
