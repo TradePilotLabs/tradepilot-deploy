@@ -48,7 +48,7 @@ async function api(userId, method, path, data = null) {
     method,
     url: BASE + path,
     headers: {
-      Authorization:  accessToken,
+      Authorization:  `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
   };
@@ -61,7 +61,7 @@ async function api(userId, method, path, data = null) {
     // 401 = token expired mid-request, refresh and retry once
     if (err.response?.status === 401) {
       const newToken = await refreshAccessToken(userId, tokens);
-      config.headers.Authorization = newToken;
+      config.headers.Authorization = `Bearer ${newToken}`;
       const res = await axios(config);
       return res.data;
     }
