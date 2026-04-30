@@ -169,6 +169,14 @@ async function updateTradeEntryPrice(tradeId, entryPrice) {
   );
 }
 
+async function cancelTrade(tradeId) {
+  await getPool().query(
+    `UPDATE trades SET status='cancelled', exit_reason='order_not_filled', exit_time=NOW()
+     WHERE id = $1 AND status = 'open'`,
+    [tradeId]
+  );
+}
+
 async function closeTrade(tradeId, { exitPrice, exitReason, pnl }) {
   await getPool().query(
     `UPDATE trades SET
@@ -204,9 +212,10 @@ async function getTradeHistory(userId, limit = 50, offset = 0) {
 async function getTodayTradeCount(userId) {
   const { rows } = await getPool().query(
     `SELECT COUNT(*) as count FROM trades
-     WHERE user_id = $1
+     WHERE user_id    = $1
        AND entry_time >= CURRENT_DATE
-       AND entry_time <  CURRENT_DATE + INTERVAL '1 day'`,
+       AND entry_time <  CURRENT_DATE + INTERVAL '1 day'
+       AND status    != 'cancelled'`,
     [userId]
   );
   return parseInt(rows[0].count, 10);
@@ -723,7 +732,7 @@ module.exports = {
   // Settings
   getOrCreateSettings, updateSettings,
   // Trades
-  createTrade, closeTrade, updateTradeEntryPrice, getOpenTrades, getTradeHistory,
+  createTrade, closeTrade, cancelTrade, updateTradeEntryPrice, getOpenTrades, getTradeHistory,
   getTodayTradeCount, getTodayRealizedPnl,
   // P&L
   upsertDailyPnl, getDailyPnlHistory,

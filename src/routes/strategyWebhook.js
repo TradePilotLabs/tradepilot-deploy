@@ -107,16 +107,15 @@ router.post('/:slug', async (req, res) => {
     const skipped = results.filter(r => r.skipped).length;
     const errors  = results.filter(r => r.error).length;
 
-    res.json({
-      received:  true,
-      strategy:  slug,
-      summary:   { subscribers: results.length, traded, skipped, errors },
-      details:   results.map(r => {
-        if (r.success) return { status: 'traded',  tradeId: r.tradeId, symbol: r.symbol };
-        if (r.skipped) return { status: 'skipped', reason: skipReason(r.skipped, r) };
-        return              { status: 'error',   reason: r.error };
-      }),
+    // Log execution summary internally — don't expose per-user detail in response
+    console.log(`[STRATEGY] ${slug} — ${results.length} subscriber(s): ${traded} traded, ${skipped} skipped, ${errors} errors`);
+    results.forEach(r => {
+      if (r.success) console.log(`[STRATEGY]   ✓ traded: ${r.tradeId} ${r.symbol}`);
+      if (r.skipped) console.log(`[STRATEGY]   — skipped: ${skipReason(r.skipped, r)}`);
+      if (r.error)   console.log(`[STRATEGY]   ✗ error: ${r.error}`);
     });
+
+    res.json({ received: true });
 
   } catch (err) {
     console.error(`[STRATEGY WEBHOOK] Error for ${slug}:`, err.message);
