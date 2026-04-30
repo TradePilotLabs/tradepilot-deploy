@@ -34,20 +34,25 @@ function toPolygonSymbol(tvSymbol) {
 }
 
 async function fetchAskAtTime(polygonSym, signalTimeMs) {
-  const date = new Date(signalTimeMs).toISOString().slice(0, 10);
+  // Use Unix ms timestamps — fetches only the 3-min window around the signal
+  // (using date strings like '2026-04-28' returns bars from 9:30 AM,
+  //  missing afternoon signals when combined with limit<500)
+  const fromMs = signalTimeMs - 60_000;
+  const toMs   = signalTimeMs + 120_000;
   try {
     const res = await axios.get(
-      `${POLYGON_BASE}/v2/aggs/ticker/${polygonSym}/range/1/minute/${date}/${date}`,
-      { params: { adjusted: false, sort: 'asc', limit: 500, apiKey: API_KEY }, timeout: 8000 }
+      `${POLYGON_BASE}/v2/aggs/ticker/${polygonSym}/range/1/minute/${fromMs}/${toMs}`,
+      { params: { adjusted: false, sort: 'asc', limit: 5, apiKey: API_KEY }, timeout: 8000 }
     );
     const bars = res.data?.results || [];
-    // Find the bar that covers the signal time (bar timestamp is bar open time)
-    const bar = bars.find(b => b.t <= signalTimeMs && b.t + 60_000 > signalTimeMs)
-             || bars.find(b => b.t >= signalTimeMs - 120_000)
-             || bars[0];
-    // Use open price of the covering bar — closest to signal time
+    if (!bars.length) {
+      console.log(`    no bars (status: ${res.data?.status})`);
+      return null;
+    }
+    const bar = bars.find(b => b.t <= signalTimeMs && b.t + 60_000 > signalTimeMs) || bars[0];
     return bar?.o ?? bar?.c ?? null;
   } catch (err) {
+    console.log(`    error: ${err.response?.status ?? ''} ${err.message}`);
     return null;
   }
 }

@@ -58,12 +58,12 @@ async function getOptionAsk(tvSymbol) {
 
 // ─── Historical minute bars ───────────────────────────────────
 
+// fromMs / toMs are Unix milliseconds — Polygon accepts both date strings and ms timestamps.
+// We always pass ms so we get bars starting from the exact entry time, not from 9:30 AM.
 async function getOptionMinuteBars(polygonSym, fromMs, toMs) {
-  const from = new Date(fromMs).toISOString().slice(0, 10);
-  const to   = new Date(toMs).toISOString().slice(0, 10);
   try {
     const res = await axios.get(
-      `${BASE}/v2/aggs/ticker/${polygonSym}/range/1/minute/${from}/${to}`,
+      `${BASE}/v2/aggs/ticker/${polygonSym}/range/1/minute/${fromMs}/${toMs}`,
       {
         params: { adjusted: false, sort: 'asc', limit: 500, apiKey: apiKey() },
         timeout: 10000,
@@ -71,13 +71,13 @@ async function getOptionMinuteBars(polygonSym, fromMs, toMs) {
     );
     const bars = res.data?.results || [];
     if (!bars.length) {
-      console.warn(`[POLYGON] No bars returned for ${polygonSym} ${from} — status: ${res.data?.status}, resultsCount: ${res.data?.resultsCount}`);
+      console.warn(`[POLYGON] No bars for ${polygonSym} ${new Date(fromMs).toISOString()} — status: ${res.data?.status}`);
     }
     return bars;
   } catch (err) {
     const status  = err.response?.status;
     const message = err.response?.data?.error || err.message;
-    console.error(`[POLYGON] getOptionMinuteBars failed for ${polygonSym}: [${status}] ${message}`);
+    console.error(`[POLYGON] bars failed for ${polygonSym}: [${status}] ${message}`);
     return [];
   }
 }
@@ -90,8 +90,8 @@ async function getBarsForSignal(signal) {
   const entryMs      = new Date(signal.signal_time).getTime();
   const d            = new Date(signal.signal_time);
   const sessionEndMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0);
-  const bars = await getOptionMinuteBars(sym, entryMs, sessionEndMs);
-  return bars.filter(b => b.t >= entryMs - 60_000);
+  // Start 1 min before entry to catch the entry bar itself
+  return getOptionMinuteBars(sym, entryMs - 60_000, sessionEndMs);
 }
 
 // ─── Health check ─────────────────────────────────────────────
