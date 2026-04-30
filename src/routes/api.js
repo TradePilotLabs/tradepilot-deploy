@@ -7,6 +7,7 @@ const {
   savePreset, getPresets, deletePreset,
   isTastyConnected, getTastyTokens,
   getStrategies, getStrategyBySlug, getSignalLog,
+  getPool,
 } = require('../data/db');
 const { getOpenPositionsForUser } = require('../data/redis');
 
@@ -88,23 +89,47 @@ router.get('/trades', async (req, res) => {
 
 router.get('/stats', async (req, res) => {
   try {
-    const [openTrades, todayPnl, pnlHistory, connected] = await Promise.all([
-      getOpenTrades(req.user.id),
-      getTodayRealizedPnl(req.user.id),
-      getDailyPnlHistory(req.user.id, 30),
-      isTastyConnected(req.user.id),
+    const userId = req.user.id;
+    const pool   = getPool();
+    const [openTrades, todayPnl, pnlHistory, connected, todayResult] = await Promise.all([
+      getOpenTrades(userId),
+      getTodayRealizedPnl(userId),
+      getDailyPnlHistory(userId, 30),
+      isTastyConnected(userId),
+      pool.query(
+        `SELECT * FROM trades
+         WHERE user_id=$1 AND entry_time >= CURRENT_DATE
+         ORDER BY entry_time DESC`,
+        [userId]
+      ),
     ]);
     const totalTrades = pnlHistory.reduce((s, d) => s + (d.trade_count || 0), 0);
     const totalWins   = pnlHistory.reduce((s, d) => s + (d.win_count   || 0), 0);
     const totalPnl    = pnlHistory.reduce((s, d) => s + parseFloat(d.total_pnl || 0), 0);
+
+    const todayTrades    = todayResult.rows;
+    const closedToday    = todayTrades.filter(t => t.status === 'closed' || t.exit_price != null);
+    const todayWins      = closedToday.filter(t => parseFloat(t.pnl || 0) > 0).length;
+    const todayLosses    = closedToday.filter(t => parseFloat(t.pnl || 0) <= 0).length;
+    const todayGrossPnl  = closedToday.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+    const todayFees      = closedToday.reduce((s, t) => s + (parseFloat(t.quantity || 0) * 1.30), 0);
+    const todayNetPnl    = todayGrossPnl - todayFees;
+
     res.json({
       openTradeCount: openTrades.length,
       todayPnl,
-      totalPnl:    parseFloat(totalPnl.toFixed(2)),
-      winRate:     totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0,
+      totalPnl:         parseFloat(totalPnl.toFixed(2)),
+      winRate:          totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0,
       totalTrades,
       pnlHistory,
-      tastyConnected: connected,
+      tastyConnected:   connected,
+      todayTrades,
+      todayCompleted:   closedToday.length,
+      todayWins,
+      todayLosses,
+      todayGrossPnl:    parseFloat(todayGrossPnl.toFixed(2)),
+      todayFees:        parseFloat(todayFees.toFixed(2)),
+      todayNetPnl:      parseFloat(todayNetPnl.toFixed(2)),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
