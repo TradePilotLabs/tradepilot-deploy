@@ -37,16 +37,21 @@ function parseSignal(body) {
       return null;
     }
 
+    // optionPrice: PineScript can send option OHLC in the signal (like automation app does).
+    // If present, contractSelector uses it directly instead of calling Polygon.
+    const optionClose = parseFloat(body.close) || parseFloat(body.optionPrice) || null;
+
     return {
       ticker,
       action,
       direction,
-      signalType:  'CUSTOM',
-      price:       parseFloat(body.price)       || null,
-      stopPct:     parseFloat(body.stopLossPct) || parseFloat(body.stopPct) || null,
-      tpPct:       parseFloat(body.tpPct)       || null,
-      comment:     body.source || '',
-      raw:         body,
+      signalType:   'CUSTOM',
+      price:        parseFloat(body.price)       || null, // underlying price
+      optionPrice:  optionClose,                          // option mid from signal (optional)
+      stopPct:      parseFloat(body.stopLossPct) || parseFloat(body.stopPct) || null,
+      tpPct:        parseFloat(body.tpPct)       || null,
+      comment:      body.source || '',
+      raw:          body,
     };
   }
 

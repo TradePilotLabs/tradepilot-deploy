@@ -92,8 +92,6 @@ async function processForUser(user, strategy, signal, rawPayload) {
     }
 
     // Find 0DTE contract
-    // Pass unmodifiedTicker from signal so contractSelector can use it directly
-    // rather than walking the full option chain
     const signalOptionSymbol = rawPayload?.unmodifiedTicker || rawPayload?.option_symbol || null;
     const contract = await selectContract(userId, {
       ticker:              signal.ticker,
@@ -101,6 +99,7 @@ async function processForUser(user, strategy, signal, rawPayload) {
       maxContractCost:     settings.max_contract_cost || 2.50,
       minContractCost:     settings.min_contract_cost || 0.10,
       signalOptionSymbol,
+      signalOptionPrice:   signal.optionPrice || null, // PineScript close price if provided
       currentPrice:        signal.price || null,
     });
 

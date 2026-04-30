@@ -22,6 +22,7 @@ async function selectContract(userId, {
   maxContractCost,
   minContractCost,
   signalOptionSymbol,  // e.g. "SPY260430C715.0" from unmodifiedTicker
+  signalOptionPrice,   // option mid price sent directly in the signal (PineScript close price)
   currentPrice,        // underlying price from signal.price
 }) {
   const today      = getTodayExpiration();
@@ -29,41 +30,39 @@ async function selectContract(userId, {
 
   // ── Path 1: signal carries explicit option symbol ──────────────
   if (signalOptionSymbol) {
-    const occ   = toOCCSymbol(signalOptionSymbol);
-    const price = await fetchOptionPrice(signalOptionSymbol);
+    const occ = toOCCSymbol(signalOptionSymbol);
 
     if (occ) {
-      const mid = price || null;
-
-      // Price filter — if we have a price, enforce limits
-      if (mid !== null) {
-        if (minContractCost && mid < minContractCost) {
-          throw new Error(
-            `Option ${signalOptionSymbol} mid=$${mid} is below minContractCost $${minContractCost}`
-          );
-        }
-        if (maxContractCost && mid > maxContractCost) {
-          throw new Error(
-            `Option ${signalOptionSymbol} mid=$${mid} exceeds maxContractCost $${maxContractCost}`
-          );
-        }
+      // Prefer price sent directly in the signal (PineScript OHLC), fall back to Polygon
+      let mid = signalOptionPrice || null;
+      if (!mid) {
+        mid = await fetchOptionPrice(signalOptionSymbol);
       }
 
       if (mid === null) {
         throw new Error(
-          `Cannot price ${signalOptionSymbol} — Polygon returned no data (market may be closed or option illiquid). Refusing to place a blind market order.`
+          `Cannot price ${signalOptionSymbol} — no price in signal and Polygon returned no data (market closed?). Refusing to place a blind market order.`
         );
       }
 
-      const safeAsk = mid * 1.02;
-      const safeBid = mid * 0.98;
+      if (minContractCost && mid < minContractCost) {
+        throw new Error(
+          `Option ${signalOptionSymbol} mid=$${mid} is below minContractCost $${minContractCost}`
+        );
+      }
+      if (maxContractCost && mid > maxContractCost) {
+        throw new Error(
+          `Option ${signalOptionSymbol} mid=$${mid} exceeds maxContractCost $${maxContractCost}`
+        );
+      }
 
-      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid}`);
+      const source = signalOptionPrice ? 'signal' : 'Polygon';
+      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid} (source: ${source})`);
       return {
         symbol:      occ,
         strikePrice: parseStrikeFromTv(signalOptionSymbol),
-        bid:         safeBid,
-        ask:         safeAsk,
+        bid:         mid * 0.98,
+        ask:         mid * 1.02,
         mid,
         expiration:  today,
         optionType,
