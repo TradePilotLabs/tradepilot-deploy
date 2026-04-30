@@ -40,17 +40,20 @@ function underlyingFromTv(tvSymbol) {
 // ─── Live ask price (snapshot) ────────────────────────────────
 
 async function getOptionAsk(tvSymbol) {
-  const sym        = toPolygonSymbol(tvSymbol);
-  const underlying = underlyingFromTv(tvSymbol);
-  if (!sym || !underlying) return null;
+  const sym = toPolygonSymbol(tvSymbol);
+  if (!sym) return null;
 
+  // Use the most recent minute bar's close as the ask proxy.
+  // The snapshot endpoint requires a higher-tier plan; aggs work on Starter.
+  const now    = Date.now();
+  const fromMs = now - 5 * 60_000; // last 5 minutes
   try {
     const res = await axios.get(
-      `${BASE}/v3/snapshot/options/${underlying}/${sym}`,
-      { params: { apiKey: apiKey() }, timeout: 5000 }
+      `${BASE}/v2/aggs/ticker/${sym}/range/1/minute/${fromMs}/${now}`,
+      { params: { adjusted: false, sort: 'desc', limit: 1, apiKey: apiKey() }, timeout: 5000 }
     );
-    const ask = res.data?.results?.last_quote?.ask ?? null;
-    return ask != null ? parseFloat(ask) : null;
+    const bar = res.data?.results?.[0];
+    return bar ? parseFloat(bar.c) : null;
   } catch {
     return null;
   }
