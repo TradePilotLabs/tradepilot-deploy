@@ -103,12 +103,37 @@ router.post('/:slug', async (req, res) => {
 
     const results = await processStrategySignal(strategy, req.body);
 
-    res.json({ success: true, strategy: slug, results });
+    const traded  = results.filter(r => r.success).length;
+    const skipped = results.filter(r => r.skipped).length;
+    const errors  = results.filter(r => r.error).length;
+
+    res.json({
+      received:  true,
+      strategy:  slug,
+      summary:   { subscribers: results.length, traded, skipped, errors },
+      details:   results.map(r => {
+        if (r.success) return { status: 'traded',  tradeId: r.tradeId, symbol: r.symbol };
+        if (r.skipped) return { status: 'skipped', reason: skipReason(r.skipped, r) };
+        return              { status: 'error',   reason: r.error };
+      }),
+    });
 
   } catch (err) {
     console.error(`[STRATEGY WEBHOOK] Error for ${slug}:`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
+function skipReason(code, result) {
+  const map = {
+    no_tastytrade_account: 'No TastyTrade account connected',
+    ticker_filtered:       'Ticker not in user\'s allowed list',
+    outside_trading_hours: 'Outside configured trading hours',
+    max_trades_reached:    'Daily trade limit already reached',
+    max_active_trades:     'Max concurrent open positions reached',
+    kill_switch:           `Kill switch active${result.reason ? ': ' + result.reason : ''}`,
+  };
+  return map[code] || code;
+}
 
 module.exports = router;
