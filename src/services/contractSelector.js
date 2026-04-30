@@ -1,60 +1,60 @@
-const { getOptionChain, getEquityQuote } = require('./tastyClient');
+const { getOptionChain } = require('./tastyClient');
 
 /**
  * Finds the best 0DTE option contract for a given ticker + direction.
  *
- * Strategy:
- * - Find today's expiration in the chain
- * - Get current equity price to find ATM strike
- * - Filter by min/max contract cost from user settings
- * - Return the ATM-nearest contract that fits the price filter
+ * ATM detection uses put-call parity instead of a live equity quote:
+ * for 0DTE options, the strike where call_mid ≈ put_mid is approximately
+ * the current spot price. This avoids a separate /market-data/quotes call
+ * which is not available in TastyTrade's REST API (streaming-only).
  */
 async function selectContract(userId, { ticker, direction, maxContractCost, minContractCost }) {
   const today = getTodayExpiration();
 
-  // Get the option chain
   const chain = await getOptionChain(userId, ticker);
   if (!chain) throw new Error(`No option chain found for ${ticker}`);
 
-  // Find today's expiration
   const expirations = chain.expirations || [];
   const expiration  = expirations.find(e => e['expiration-date'] === today);
   if (!expiration) {
     throw new Error(`No 0DTE expiration found for ${ticker} on ${today}`);
   }
 
-  // Get current equity price for ATM calculation
-  const quote        = await getEquityQuote(userId, ticker);
-  const currentPrice = parseFloat(quote?.['last-price'] || quote?.['mark'] || 0);
-  if (!currentPrice) throw new Error(`Could not get current price for ${ticker}`);
-
-  // Get strikes for the right option type
-  const optionType = direction === 'calls' ? 'call' : 'put';
   const strikes    = expiration.strikes || [];
+  const optionType = direction === 'calls' ? 'call' : 'put';
 
-  // Build candidate list
+  // ── Derive ATM via put-call parity ────────────────────────────
+  // At ATM the call and put mid prices are approximately equal (0DTE).
+  // Find the strike with the smallest |call_mid - put_mid| — that's spot.
+  let atmStrike = null;
+  let minParity = Infinity;
+  for (const strike of strikes) {
+    const c = strike['call']; const p = strike['put'];
+    if (!c || !p) continue;
+    const cMid = (parseFloat(c['ask-price'] || 0) + parseFloat(c['bid-price'] || 0)) / 2;
+    const pMid = (parseFloat(p['ask-price'] || 0) + parseFloat(p['bid-price'] || 0)) / 2;
+    if (cMid <= 0 || pMid <= 0) continue;
+    const diff = Math.abs(cMid - pMid);
+    if (diff < minParity) { minParity = diff; atmStrike = parseFloat(strike['strike-price']); }
+  }
+  if (!atmStrike) throw new Error(`Could not determine ATM strike for ${ticker}`);
+
+  // ── Build candidate list ──────────────────────────────────────
   const candidates = [];
   for (const strike of strikes) {
     const option = strike[optionType];
     if (!option) continue;
-
     const ask = parseFloat(option['ask-price'] || 0);
     const bid = parseFloat(option['bid-price'] || 0);
     const mid = (ask + bid) / 2;
-
-    // Skip if outside price filter
     if (minContractCost && mid < minContractCost) continue;
     if (maxContractCost && mid > maxContractCost) continue;
-
     const strikePrice = parseFloat(strike['strike-price']);
-    const distFromAtm = Math.abs(strikePrice - currentPrice);
-
     candidates.push({
       symbol:      option['symbol'],
       strikePrice,
-      distFromAtm,
-      bid,
-      ask,
+      distFromAtm: Math.abs(strikePrice - atmStrike),
+      bid, ask,
       mid:         parseFloat(mid.toFixed(2)),
       expiration:  today,
       optionType,
@@ -63,11 +63,11 @@ async function selectContract(userId, { ticker, direction, maxContractCost, minC
 
   if (!candidates.length) {
     throw new Error(
-      `No ${direction} contracts found for ${ticker} between $${minContractCost} and $${maxContractCost}`
+      `No ${direction} contracts found for ${ticker} between $${minContractCost} and $${maxContractCost} ` +
+      `(ATM inferred at ${atmStrike})`
     );
   }
 
-  // Sort by closest to ATM, return the best fit
   candidates.sort((a, b) => a.distFromAtm - b.distFromAtm);
   return candidates[0];
 }
