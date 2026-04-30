@@ -175,4 +175,31 @@ router.get('/webhook-info', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/flatten-all — emergency close all open positions for the current user
+router.post('/flatten-all', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { closePosition } = require('../services/orderPlacer');
+    const tokens    = await getTastyTokens(userId);
+    if (!tokens?.account_number) return res.status(400).json({ error: 'No broker connected' });
+
+    const positions = await getOpenPositionsForUser(userId);
+    if (!positions.length) return res.json({ flattened: 0 });
+
+    let flattened = 0;
+    for (const pos of positions) {
+      try {
+        await closePosition({ userId, accountNumber: tokens.account_number,
+          position: pos, exitReason: 'manual_flatten', currentPrice: null });
+        flattened++;
+      } catch (e) {
+        console.error(`[FLATTEN] ${pos.optionSymbol}:`, e.message);
+      }
+    }
+    res.json({ flattened, total: positions.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

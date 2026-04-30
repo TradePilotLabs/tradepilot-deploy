@@ -1,5 +1,5 @@
 const { getUsersOnStrategy, getTastyTokens,
-        getTodayTradeCount, getTodayRealizedPnl, logSignal } = require('../data/db');
+        getTodayTradeCount, getTodayRealizedPnl, logSignal, getOpenTrades } = require('../data/db');
 const { parseSignal }                    = require('./signalParser');
 const { selectContract, calcQuantity }   = require('./contractSelector');
 const { openPosition }                   = require('./orderPlacer');
@@ -72,6 +72,16 @@ async function processForUser(user, strategy, signal, rawPayload) {
       return { skipped: 'max_trades_reached' };
     }
 
+    // Max active (concurrent) trades
+    if (settings.max_active_trades) {
+      const openTrades = await getOpenTrades(userId);
+      if (openTrades.length >= settings.max_active_trades) {
+        await logSignal({ userId, strategySlug: strategy.slug, ...signalMeta(signal, rawPayload),
+          outcome: 'skipped', outcomeDetail: 'max_active_trades' });
+        return { skipped: 'max_active_trades' };
+      }
+    }
+
     // Kill switch
     const realizedPnl = await getTodayRealizedPnl(userId);
     const killCheck   = checkKillSwitch(settings, realizedPnl);
@@ -107,6 +117,7 @@ async function processForUser(user, strategy, signal, rawPayload) {
       entryPrice:    contract.mid,
       peakPrice:     contract.mid,
       accountNumber,
+      openedAt:      new Date().toISOString(),
       stopPct:       signal.stopPct || settings.stop_loss_pct || 40,
       tpPct:         signal.tpPct   || strategy.default_tp_pct || null,
     });

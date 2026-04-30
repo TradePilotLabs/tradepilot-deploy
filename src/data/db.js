@@ -330,8 +330,11 @@ async function getUsersOnStrategy(slug) {
             us.max_capital_per_trade, us.max_trades_per_day,
             us.max_contract_cost, us.min_contract_cost,
             us.stop_loss_pct, us.order_type, us.schedule,
-            us.trailing_enabled, us.trailing_trigger_pct,
-            us.trailing_pct, us.break_even_enabled,
+            us.trailing_enabled, us.trailing_mode, us.trailing_trigger_pct,
+            us.trailing_pct, us.break_even_enabled, us.multi_tier_enabled,
+            us.trailing_stop_multiplier, us.trailing_tiers,
+            us.max_active_trades, us.active_trade_time_limit,
+            us.limit_entry, us.order_fill_timeout,
             us.kill_profit_enabled, us.kill_profit_type, us.kill_profit_value,
             us.kill_loss_enabled,   us.kill_loss_type,   us.kill_loss_value,
             us.unreal_profit_enabled, us.unreal_profit_type, us.unreal_profit_value,
@@ -570,6 +573,9 @@ async function upsertBrokerSettings(brokerConnectionId, userId, settings) {
     'unreal_loss_enabled', 'unreal_loss_type', 'unreal_loss_value',
     'trailing_enabled', 'trailing_mode', 'trailing_trigger_pct',
     'trailing_pct', 'break_even_enabled', 'multi_tier_enabled', 'schedule',
+    'max_active_trades', 'active_trade_time_limit',
+    'trailing_stop_multiplier', 'trailing_tiers',
+    'limit_entry', 'order_fill_timeout',
   ];
   const updates = {};
   for (const key of allowed) {
