@@ -1,15 +1,76 @@
 const { getOptionChain } = require('./tastyClient');
+const { getOptionAsk }   = require('./polygonClient');
 
 /**
- * Finds the best 0DTE option contract for a given ticker + direction.
+ * Selects the best 0DTE option contract to trade.
  *
- * ATM detection uses put-call parity instead of a live equity quote:
- * for 0DTE options, the strike where call_mid ≈ put_mid is approximately
- * the current spot price. This avoids a separate /market-data/quotes call
- * which is not available in TastyTrade's REST API (streaming-only).
+ * Priority:
+ *  1. If the signal already specifies an option (unmodifiedTicker from PineScript),
+ *     convert it to OCC format and use it directly — TradingView already chose ATM.
+ *  2. Otherwise fall back to walking the option chain using the underlying price
+ *     (signal.price) to find the nearest ATM strike.
+ *
+ * Price (bid/ask/mid) is fetched from Polygon.io for quantity calculation.
+ * If Polygon is unavailable we fall back to a single-contract default.
+ *
+ * TastyTrade REST does not expose a working market-data/quotes endpoint —
+ * all pricing comes from Polygon.
  */
-async function selectContract(userId, { ticker, direction, maxContractCost, minContractCost }) {
-  const today = getTodayExpiration();
+async function selectContract(userId, {
+  ticker,
+  direction,
+  maxContractCost,
+  minContractCost,
+  signalOptionSymbol,  // e.g. "SPY260430C715.0" from unmodifiedTicker
+  currentPrice,        // underlying price from signal.price
+}) {
+  const today      = getTodayExpiration();
+  const optionType = direction === 'calls' ? 'call' : 'put';
+
+  // ── Path 1: signal carries explicit option symbol ──────────────
+  if (signalOptionSymbol) {
+    const occ   = toOCCSymbol(signalOptionSymbol);
+    const price = await fetchOptionPrice(signalOptionSymbol);
+
+    if (occ) {
+      const mid = price || null;
+
+      // Price filter — if we have a price, enforce limits
+      if (mid !== null) {
+        if (minContractCost && mid < minContractCost) {
+          throw new Error(
+            `Option ${signalOptionSymbol} mid=$${mid} is below minContractCost $${minContractCost}`
+          );
+        }
+        if (maxContractCost && mid > maxContractCost) {
+          throw new Error(
+            `Option ${signalOptionSymbol} mid=$${mid} exceeds maxContractCost $${maxContractCost}`
+          );
+        }
+      }
+
+      const safeAsk = mid ? mid * 1.02 : null;
+      const safeBid = mid ? mid * 0.98 : null;
+
+      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid ?? 'unknown'}`);
+      return {
+        symbol:      occ,
+        strikePrice: parseStrikeFromTv(signalOptionSymbol),
+        bid:         safeBid,
+        ask:         safeAsk,
+        mid,
+        expiration:  today,
+        optionType,
+      };
+    }
+  }
+
+  // ── Path 2: walk option chain + underlying price ────────────────
+  if (!currentPrice) {
+    throw new Error(
+      'Cannot select contract: no option symbol or underlying price in signal'
+    );
+  }
 
   const chain = await getOptionChain(userId, ticker);
   if (!chain) throw new Error(`No option chain found for ${ticker}`);
@@ -20,77 +81,93 @@ async function selectContract(userId, { ticker, direction, maxContractCost, minC
     throw new Error(`No 0DTE expiration found for ${ticker} on ${today}`);
   }
 
-  const strikes    = expiration.strikes || [];
-  const optionType = direction === 'calls' ? 'call' : 'put';
+  const strikes = expiration.strikes || [];
+  if (!strikes.length) throw new Error(`Empty strike list for ${ticker}`);
 
-  // ── Derive ATM via put-call parity ────────────────────────────
-  // At ATM the call and put mid prices are approximately equal (0DTE).
-  // Find the strike with the smallest |call_mid - put_mid| — that's spot.
-  let atmStrike = null;
-  let minParity = Infinity;
+  // Find the strike closest to current underlying price
+  let best = null, bestDist = Infinity;
   for (const strike of strikes) {
-    const c = strike['call']; const p = strike['put'];
-    if (!c || !p) continue;
-    const cMid = (parseFloat(c['ask-price'] || 0) + parseFloat(c['bid-price'] || 0)) / 2;
-    const pMid = (parseFloat(p['ask-price'] || 0) + parseFloat(p['bid-price'] || 0)) / 2;
-    if (cMid <= 0 || pMid <= 0) continue;
-    const diff = Math.abs(cMid - pMid);
-    if (diff < minParity) { minParity = diff; atmStrike = parseFloat(strike['strike-price']); }
+    const sym = strike[optionType === 'call' ? 'call' : 'put'];
+    if (!sym) continue;
+    const sp   = parseFloat(strike['strike-price']);
+    const dist = Math.abs(sp - currentPrice);
+    if (dist < bestDist) { bestDist = dist; best = { sp, sym }; }
   }
-  if (!atmStrike) throw new Error(`Could not determine ATM strike for ${ticker}`);
+  if (!best) throw new Error(`No ${direction} strikes found for ${ticker}`);
 
-  // ── Build candidate list ──────────────────────────────────────
-  const candidates = [];
-  for (const strike of strikes) {
-    const option = strike[optionType];
-    if (!option) continue;
-    const ask = parseFloat(option['ask-price'] || 0);
-    const bid = parseFloat(option['bid-price'] || 0);
-    const mid = (ask + bid) / 2;
-    if (minContractCost && mid < minContractCost) continue;
-    if (maxContractCost && mid > maxContractCost) continue;
-    const strikePrice = parseFloat(strike['strike-price']);
-    candidates.push({
-      symbol:      option['symbol'],
-      strikePrice,
-      distFromAtm: Math.abs(strikePrice - atmStrike),
-      bid, ask,
-      mid:         parseFloat(mid.toFixed(2)),
-      expiration:  today,
-      optionType,
-    });
+  // sym here is the OCC symbol string from the chain
+  const tvSym = occToTv(best.sym);
+  const mid   = tvSym ? await fetchOptionPrice(tvSym) : null;
+
+  if (mid !== null) {
+    if (minContractCost && mid < minContractCost)
+      throw new Error(`ATM contract mid=$${mid} below minContractCost $${minContractCost}`);
+    if (maxContractCost && mid > maxContractCost)
+      throw new Error(`ATM contract mid=$${mid} exceeds maxContractCost $${maxContractCost}`);
   }
 
-  if (!candidates.length) {
-    throw new Error(
-      `No ${direction} contracts found for ${ticker} between $${minContractCost} and $${maxContractCost} ` +
-      `(ATM inferred at ${atmStrike})`
-    );
-  }
-
-  candidates.sort((a, b) => a.distFromAtm - b.distFromAtm);
-  return candidates[0];
+  console.log(`[CONTRACT] Chain selection ${best.sym} mid=$${mid ?? 'unknown'}`);
+  return {
+    symbol:      best.sym,
+    strikePrice: best.sp,
+    bid:         mid ? mid * 0.98 : null,
+    ask:         mid ? mid * 1.02 : null,
+    mid,
+    expiration:  today,
+    optionType,
+  };
 }
 
 /**
- * Calculate how many contracts to buy based on user's capital settings.
- * Uses the lower of: (maxCapital / contractPrice*100) or 1 contract minimum.
+ * Calculate how many contracts to buy.
+ * If mid price is unknown, fall back to 1 contract (safe default for market orders).
  */
 function calcQuantity(contractMidPrice, maxCapitalPerTrade) {
-  if (!contractMidPrice || contractMidPrice <= 0) return 1;
-  const costPerContract = contractMidPrice * 100; // options are per 100 shares
-  const qty = Math.floor(maxCapitalPerTrade / costPerContract);
-  return Math.max(1, qty);
+  if (!contractMidPrice || contractMidPrice <= 0) {
+    console.warn('[CONTRACT] No price for quantity calc — defaulting to 1 contract');
+    return 1;
+  }
+  return Math.max(1, Math.floor(maxCapitalPerTrade / (contractMidPrice * 100)));
 }
 
-/**
- * Returns today's date in YYYY-MM-DD format (ET timezone aware).
- * Markets run on Eastern Time so we use ET for expiration matching.
- */
+// ── Helpers ────────────────────────────────────────────────────────
+
+async function fetchOptionPrice(tvSymbol) {
+  try {
+    const price = await getOptionAsk(tvSymbol);
+    return price && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+// "SPY260430C715.0" → "SPY   260430C00715000"
+function toOCCSymbol(tvSymbol) {
+  if (!tvSymbol) return null;
+  const m = tvSymbol.match(/^([A-Z]+)(\d{6})([CP])(\d+(?:\.\d+)?)$/i);
+  if (!m) return null;
+  const [, root, date, type, strikeStr] = m;
+  const strike = Math.round(parseFloat(strikeStr) * 1000);
+  return `${root.padEnd(6, ' ')}${date}${type.toUpperCase()}${String(strike).padStart(8, '0')}`;
+}
+
+// "SPY   260430C00715000" → "SPY260430C715.0"  (for Polygon lookup)
+function occToTv(occSym) {
+  if (!occSym) return null;
+  const m = occSym.trim().match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/i);
+  if (!m) return null;
+  const [, root, date, type, strikeStr] = m;
+  const strike = parseInt(strikeStr, 10) / 1000;
+  return `${root}${date}${type.toUpperCase()}${strike}`;
+}
+
+function parseStrikeFromTv(tvSymbol) {
+  const m = tvSymbol?.match(/^[A-Z]+\d{6}[CP](\d+(?:\.\d+)?)/i);
+  return m ? parseFloat(m[1]) : null;
+}
+
 function getTodayExpiration() {
-  const now = new Date();
-  // Convert to ET
-  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
   const y  = et.getFullYear();
   const m  = String(et.getMonth() + 1).padStart(2, '0');
   const d  = String(et.getDate()).padStart(2, '0');

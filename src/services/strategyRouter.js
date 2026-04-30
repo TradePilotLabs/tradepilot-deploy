@@ -92,11 +92,16 @@ async function processForUser(user, strategy, signal, rawPayload) {
     }
 
     // Find 0DTE contract
+    // Pass unmodifiedTicker from signal so contractSelector can use it directly
+    // rather than walking the full option chain
+    const signalOptionSymbol = rawPayload?.unmodifiedTicker || rawPayload?.option_symbol || null;
     const contract = await selectContract(userId, {
-      ticker:          signal.ticker,
-      direction:       signal.direction,
-      maxContractCost: settings.max_contract_cost || 2.50,
-      minContractCost: settings.min_contract_cost || 0.25,
+      ticker:              signal.ticker,
+      direction:           signal.direction,
+      maxContractCost:     settings.max_contract_cost || 2.50,
+      minContractCost:     settings.min_contract_cost || 0.10,
+      signalOptionSymbol,
+      currentPrice:        signal.price || null,
     });
 
     // Calculate quantity
