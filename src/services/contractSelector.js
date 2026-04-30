@@ -49,10 +49,16 @@ async function selectContract(userId, {
         }
       }
 
-      const safeAsk = mid ? mid * 1.02 : null;
-      const safeBid = mid ? mid * 0.98 : null;
+      if (mid === null) {
+        throw new Error(
+          `Cannot price ${signalOptionSymbol} — Polygon returned no data (market may be closed or option illiquid). Refusing to place a blind market order.`
+        );
+      }
 
-      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid ?? 'unknown'}`);
+      const safeAsk = mid * 1.02;
+      const safeBid = mid * 0.98;
+
+      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid}`);
       return {
         symbol:      occ,
         strikePrice: parseStrikeFromTv(signalOptionSymbol),
@@ -99,14 +105,18 @@ async function selectContract(userId, {
   const tvSym = occToTv(best.sym);
   const mid   = tvSym ? await fetchOptionPrice(tvSym) : null;
 
-  if (mid !== null) {
-    if (minContractCost && mid < minContractCost)
-      throw new Error(`ATM contract mid=$${mid} below minContractCost $${minContractCost}`);
-    if (maxContractCost && mid > maxContractCost)
-      throw new Error(`ATM contract mid=$${mid} exceeds maxContractCost $${maxContractCost}`);
+  if (mid === null) {
+    throw new Error(
+      `Cannot price ${best.sym} — Polygon returned no data (market may be closed or option illiquid). Refusing to place a blind market order.`
+    );
   }
 
-  console.log(`[CONTRACT] Chain selection ${best.sym} mid=$${mid ?? 'unknown'}`);
+  if (minContractCost && mid < minContractCost)
+    throw new Error(`ATM contract mid=$${mid} below minContractCost $${minContractCost}`);
+  if (maxContractCost && mid > maxContractCost)
+    throw new Error(`ATM contract mid=$${mid} exceeds maxContractCost $${maxContractCost}`);
+
+  console.log(`[CONTRACT] Chain selection ${best.sym} mid=$${mid}`);
   return {
     symbol:      best.sym,
     strikePrice: best.sp,

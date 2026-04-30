@@ -12,7 +12,7 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
   const order = {
     'order-type':    orderType,
     'time-in-force': 'Day',
-    'price':         orderType === 'Limit' ? contract.ask : undefined, // use ask for limit
+    'price-effect':  'Debit',
     legs: [
       {
         'instrument-type': 'Equity Option',
@@ -23,8 +23,9 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
     ],
   };
 
-  // Remove undefined price field for market orders
-  if (order['price'] === undefined) delete order['price'];
+  if (orderType === 'Limit') {
+    order['price'] = contract.ask;
+  }
 
   console.log(`[ORDER] Opening ${quantity}x ${contract.symbol} @ ${orderType}`);
 
@@ -56,6 +57,7 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
   const order = {
     'order-type':    'Market',
     'time-in-force': 'Day',
+    'price-effect':  'Credit',
     legs: [
       {
         'instrument-type': 'Equity Option',
