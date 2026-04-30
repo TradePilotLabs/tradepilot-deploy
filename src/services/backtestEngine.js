@@ -14,35 +14,35 @@ const { isSkipDay } = require('../data/marketEvents');
 
 const TASTY_FEE_PER_CONTRACT = 0.60;
 
-// Walks Polygon minute bars to find the first bar where TP or SL was crossed.
-// Each bar has { t (ms), o, h, l, c }. h/l tell us the range within that minute.
-// If both TP and SL are crossed in the same bar, SL wins (conservative).
-function resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct) {
-  const bars = t.signal._bars || [];
-  const tpThreshold = t.entryPrice * (1 + takeProfitPct / 100);
-  const slThreshold = t.entryPrice * (1 - stopLossPct  / 100);
+// Walks bars to find the first minute where TP or SL was crossed.
+// Returns outcome, exitPrice, pnlPct, and the bar's timestamp (exitTimeMs).
+// SL wins when both are hit in the same bar (conservative — intra-bar order unknown).
+function resolveFromBars(bars, entryPrice, takeProfitPct, stopLossPct, maxExitMs) {
+  const tpThreshold = entryPrice * (1 + takeProfitPct / 100);
+  const slThreshold = entryPrice * (1 - stopLossPct  / 100);
+  const window = maxExitMs ? bars.filter(b => b.t <= maxExitMs) : bars;
 
-  for (const bar of bars) {
-    const tpHit = bar.h >= tpThreshold;
-    const slHit = bar.l <= slThreshold;
-    if (slHit) {
-      // SL wins when both hit same bar (can't know intra-bar order; be conservative)
+  for (const bar of window) {
+    if (bar.l <= slThreshold) {
       const pct = -stopLossPct / 100;
-      return { outcome: 'stop_loss', pnlPct: pct,
-               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+      return { outcome: 'stop_loss',   pnlPct: pct,
+               exitPrice: parseFloat((entryPrice * (1 + pct)).toFixed(4)),
+               exitTimeMs: bar.t };
     }
-    if (tpHit) {
+    if (bar.h >= tpThreshold) {
       const pct = takeProfitPct / 100;
       return { outcome: 'take_profit', pnlPct: pct,
-               exitPrice: parseFloat((t.entryPrice * (1 + pct)).toFixed(4)) };
+               exitPrice: parseFloat((entryPrice * (1 + pct)).toFixed(4)),
+               exitTimeMs: bar.t };
     }
   }
 
-  // Neither hit — closed at last bar price (market close)
-  const exitPrice = bars.length ? bars[bars.length - 1].c : t.entryPrice;
+  const lastBar   = window[window.length - 1];
+  const exitPrice = lastBar?.c ?? entryPrice;
   return { outcome: 'market_close',
-           pnlPct: (exitPrice - t.entryPrice) / t.entryPrice,
-           exitPrice };
+           pnlPct:     (exitPrice - entryPrice) / entryPrice,
+           exitPrice,
+           exitTimeMs: lastBar?.t ?? maxExitMs };
 }
 
 function toDateStr(ts) {
@@ -153,21 +153,10 @@ function runBacktest(signals, settings) {
         // Calculate exit price and P&L based on settings
         let exitPrice, pnlPct, grossPnl, fees = 0;
 
-        if (t.outcome === 'take_profit') {
-          pnlPct    = takeProfitPct / 100;
-          exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
-          grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-        } else if (t.outcome === 'stop_loss') {
-          pnlPct    = -stopLossPct / 100;
-          exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
-          grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-        } else {
-          const resolved = resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct);
-          exitPrice = resolved.exitPrice;
-          pnlPct    = resolved.pnlPct;
-          grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-          t.outcome = resolved.outcome;
-        }
+        // Use pre-resolved result — outcome, price, and exit time were all set at open
+        exitPrice = t._resolved.exitPrice;
+        pnlPct    = t._resolved.pnlPct;
+        grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
 
         if (includeBrokerFees) {
           fees = t.contracts * TASTY_FEE_PER_CONTRACT;
@@ -276,52 +265,42 @@ function runBacktest(signals, settings) {
       skippedSignals.push({ ...sig, skipReason: 'insufficient_capital' }); continue;
     }
 
-    // Exit time defaults to 3:44 PM ET same day (standard 0DTE close)
+    // Determine session end (3:44 PM ET) and optional time limit
     const d = new Date(signalTime);
-    const defaultExit = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0));
-    let exitTime = sig.exit_time ? new Date(sig.exit_time) : defaultExit;
-    if (activeTimeLimitMin) {
-      const limitedExit = new Date(signalTime.getTime() + activeTimeLimitMin * 60000);
-      if (limitedExit < exitTime) {
-        exitTime = limitedExit;
-        sig._outcomeOverride = 'time_limit';
-      }
-    }
+    const sessionEndMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 44, 0);
+    const timeLimitMs  = activeTimeLimitMin
+      ? signalTime.getTime() + activeTimeLimitMin * 60000
+      : null;
+    const maxExitMs = timeLimitMs ? Math.min(timeLimitMs, sessionEndMs) : sessionEndMs;
 
-    // Open trade
+    // Resolve outcome NOW from Polygon bars so exit time is accurate
+    const resolved = resolveFromBars(sig._bars, entryPrice, takeProfitPct, stopLossPct, maxExitMs);
+    const outcome  = timeLimitMs && timeLimitMs < sessionEndMs && resolved.outcome === 'market_close'
+      ? 'time_limit'
+      : resolved.outcome;
+
+    // Open trade with the actual exit time (when TP/SL bar fired, not blindly 3:44 PM)
     openTrades.push({
       signal:     sig,
       contracts,
       entryPrice,
       entryTime:  sig.signal_time,
-      exitTime:   exitTime.toISOString(),
-      outcome:    sig._outcomeOverride || sig.outcome,
+      exitTime:   new Date(resolved.exitTimeMs ?? maxExitMs).toISOString(),
+      outcome,
       cost:       contracts * entryPrice * 100,
+      _resolved:  resolved,
     });
 
     dailyTradeCount[dateStr]++;
   }
 
-  // Close all remaining open trades (treat as market_close)
+  // Close all remaining open trades
   for (const t of openTrades) {
-    const exitAsk = parseFloat(t.signal.exit_ask) || t.entryPrice;
     let exitPrice, pnlPct, grossPnl;
 
-    if (t.outcome === 'take_profit') {
-      pnlPct    = takeProfitPct / 100;
-      exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
-      grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-    } else if (t.outcome === 'stop_loss') {
-      pnlPct    = -stopLossPct / 100;
-      exitPrice = parseFloat((t.entryPrice * (1 + pnlPct)).toFixed(4));
-      grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-    } else {
-      const resolved = resolveMarketCloseOutcome(t, takeProfitPct, stopLossPct);
-      exitPrice = resolved.exitPrice;
-      pnlPct    = resolved.pnlPct;
-      grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
-      t.outcome = resolved.outcome;
-    }
+    exitPrice = t._resolved.exitPrice;
+    pnlPct    = t._resolved.pnlPct;
+    grossPnl  = t.contracts * t.entryPrice * 100 * pnlPct;
 
     const fees   = includeBrokerFees ? t.contracts * TASTY_FEE_PER_CONTRACT : 0;
     const netPnl = grossPnl - fees;
