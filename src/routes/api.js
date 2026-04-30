@@ -28,7 +28,7 @@ router.patch('/settings', async (req, res) => {
       'alert_source', 'signal_source',
       'risk_allocation', 'max_capital_per_trade',
       'max_trades_per_day', 'max_contract_cost', 'min_contract_cost',
-      'stop_loss_pct',
+      'take_profit_pct', 'stop_loss_pct',
       'kill_profit_enabled', 'kill_profit_type', 'kill_profit_value',
       'kill_loss_enabled',   'kill_loss_type',   'kill_loss_value',
       'unreal_profit_enabled', 'unreal_profit_type', 'unreal_profit_value',

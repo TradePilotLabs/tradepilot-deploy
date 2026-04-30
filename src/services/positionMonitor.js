@@ -1,8 +1,10 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
-const { getQuotes }                           = require('./tastyClient');
+const { getPositions, getOrder }              = require('./tastyClient');
+const { getOptionAskByOcc }                   = require('./polygonClient');
 const { closePosition }                       = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
-const { getOrCreateSettings, getTastyTokens, getTodayRealizedPnl } = require('../data/db');
+const { getOrCreateSettings, getTastyTokens,
+        getTodayRealizedPnl, updateTradeEntryPrice } = require('../data/db');
 
 const POLL_INTERVAL_MS = 8000;
 let   monitorInterval  = null;
@@ -47,27 +49,64 @@ async function checkUserPositions(userId, positions) {
   if (!tokens?.account_number) return;
   const accountNumber = tokens.account_number;
 
-  const symbols = positions.map(p => p.optionSymbol);
-  let quotes = [];
-  try {
-    quotes = await getQuotes(userId, symbols);
-  } catch (err) {
-    console.error(`[MONITOR] Quote fetch failed for user ${userId}:`, err.message);
-    return;
-  }
-
+  // ── 1. Build live price map via Polygon ──────────────────────
+  // TastyTrade's REST /market-data/quotes endpoint is not available;
+  // Polygon minute bars are the reliable source for live option prices.
   const priceMap = {};
-  for (const q of quotes) {
-    const sym  = q['symbol'];
-    const mark = parseFloat(q['mark'] || q['last-price'] || 0);
-    priceMap[sym] = mark;
+  for (const pos of positions) {
+    const price = await getOptionAskByOcc(pos.optionSymbol);
+    if (price !== null) priceMap[pos.optionSymbol] = price;
   }
 
+  // ── 2. Recover missing entry prices from TastyTrade fill ─────
+  // When an order is placed without a known price, entry_price is null.
+  // Poll the order fill to backfill it.
+  for (const pos of positions) {
+    if (!pos.entryPrice && pos.tastyOrderId) {
+      try {
+        const order = await getOrder(userId, accountNumber, pos.tastyOrderId);
+        const fill  = parseFloat(order?.['avg-fill-price'] || order?.['price'] || 0);
+        if (fill > 0) {
+          await updatePosition(userId, pos.tradeId, { entryPrice: fill, peakPrice: fill });
+          await updateTradeEntryPrice(pos.tradeId, fill);
+          pos.entryPrice = fill;
+          pos.peakPrice  = fill;
+          console.log(`[MONITOR] Entry price recovered: ${pos.optionSymbol} @ $${fill}`);
+        }
+      } catch { /* order may still be pending */ }
+    }
+  }
+
+  // ── 3. Reconcile: detect positions closed outside TradePilot ─
+  // If a position exists in Redis but is no longer at the broker,
+  // it was manually closed — sync the DB record accordingly.
+  let brokerSymbols = new Set();
+  try {
+    const brokerPositions = await getPositions(userId, accountNumber);
+    brokerSymbols = new Set(brokerPositions.map(p => p['symbol']));
+  } catch { /* non-fatal — skip reconciliation this cycle */ }
+
+  if (brokerSymbols.size > 0) {
+    for (const pos of positions) {
+      if (!brokerSymbols.has(pos.optionSymbol)) {
+        const lastPrice = priceMap[pos.optionSymbol] ?? pos.entryPrice ?? 0;
+        console.log(`[MONITOR] ${pos.optionSymbol} not found at broker — closed externally`);
+        await closePosition({
+          userId, accountNumber, position: pos,
+          exitReason: 'manual_close', currentPrice: lastPrice,
+        });
+      }
+    }
+    // Re-filter to only positions still open after reconciliation
+    positions = positions.filter(p => brokerSymbols.has(p.optionSymbol));
+  }
+
+  // ── 4. Kill-switch check ─────────────────────────────────────
   const realizedPnl = await getTodayRealizedPnl(userId);
   let unrealizedPnl = 0;
   for (const pos of positions) {
-    const cur = priceMap[pos.optionSymbol] || pos.entryPrice;
-    unrealizedPnl += (cur - pos.entryPrice) * pos.quantity * 100;
+    const cur = priceMap[pos.optionSymbol] || pos.entryPrice || 0;
+    if (pos.entryPrice) unrealizedPnl += (cur - pos.entryPrice) * pos.quantity * 100;
   }
 
   const killCheck = checkKillSwitch(settings, realizedPnl, unrealizedPnl);
@@ -81,6 +120,7 @@ async function checkUserPositions(userId, positions) {
     return;
   }
 
+  // ── 5. Per-position exit checks ──────────────────────────────
   for (const pos of positions) {
     const currentPrice = priceMap[pos.optionSymbol];
     if (!currentPrice) continue;
@@ -94,7 +134,7 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
 
   const pricePct = ((currentPrice - entryPrice) / entryPrice) * 100;
 
-  // Track peak price
+  // Track peak
   if (currentPrice > (pos.peakPrice || entryPrice)) {
     await updatePosition(userId, pos.tradeId, { peakPrice: currentPrice });
     pos.peakPrice = currentPrice;
@@ -104,18 +144,19 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
 
   let exitReason = null;
 
-  // ── 1. Hard stop loss ────────────────────────────────────────
-  const stopPct = pos.stopPct || settings.stop_loss_pct;
+  // ── Hard stop loss (always active) ──────────────────────────
+  const stopPct = pos.stopPct || settings.stop_loss_pct || 50;
   if (pricePct <= -Math.abs(stopPct)) {
     exitReason = 'stop_loss';
   }
 
-  // ── 2. Fixed take profit ─────────────────────────────────────
+  // ── Fixed take profit (when trailing is not active) ──────────
+  // tpPct comes from signal or user's take_profit_pct setting
   else if (pos.tpPct && pricePct >= pos.tpPct) {
     exitReason = 'take_profit';
   }
 
-  // ── 3. Active trade time limit ───────────────────────────────
+  // ── Active trade time limit ──────────────────────────────────
   else if (settings.active_trade_time_limit && pos.openedAt) {
     const openMin = (Date.now() - new Date(pos.openedAt).getTime()) / 60_000;
     if (openMin >= settings.active_trade_time_limit) {
@@ -123,48 +164,31 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
     }
   }
 
-  // ── 4. Trailing tiers (multi-tier) ───────────────────────────
+  // ── Trailing tiers (multi-tier) ──────────────────────────────
   if (!exitReason && settings.multi_tier_enabled && settings.trailing_tiers?.length) {
-    const tiers = [...settings.trailing_tiers]
-      .sort((a, b) => a.profitTrigger - b.profitTrigger);
-
-    // Find highest tier that has been triggered by the peak
+    const tiers = [...settings.trailing_tiers].sort((a, b) => a.profitTrigger - b.profitTrigger);
     const activeTier = tiers.filter(t => peakPct >= t.profitTrigger).pop();
-
     if (activeTier) {
-      const pullbackFromPeak = ((peakPrice - currentPrice) / peakPrice) * 100;
-      if (pullbackFromPeak >= activeTier.trailPercent) {
+      const pullback = ((peakPrice - currentPrice) / peakPrice) * 100;
+      if (pullback >= activeTier.trailPercent) {
         exitReason = 'trailing_stop';
-        console.log(
-          `[MONITOR] Trailing tier hit: trigger=${activeTier.profitTrigger}% ` +
-          `trail=${activeTier.trailPercent}% pullback=${pullbackFromPeak.toFixed(1)}%`
-        );
+        console.log(`[MONITOR] Tier hit: trigger=${activeTier.profitTrigger}% trail=${activeTier.trailPercent}% pullback=${pullback.toFixed(1)}%`);
       }
     }
   }
 
-  // ── 5. Single-level trailing stop ───────────────────────────
+  // ── Single-level trailing stop ───────────────────────────────
   else if (!exitReason && settings.trailing_enabled) {
     const triggerPct = settings.trailing_trigger_pct || 4;
-
     if (peakPct >= triggerPct) {
-      const pullbackFromPeak = ((peakPrice - currentPrice) / peakPrice) * 100;
-
+      const pullback = ((peakPrice - currentPrice) / peakPrice) * 100;
       if (settings.trailing_mode === 'dynamic') {
-        // Dynamic: exit if price drops below peak × multiplier
         const multiplier = settings.trailing_stop_multiplier ?? 0.95;
-        if (currentPrice <= peakPrice * multiplier) {
-          exitReason = 'trailing_stop';
-        }
+        if (currentPrice <= peakPrice * multiplier) exitReason = 'trailing_stop';
       } else {
-        // Static: exit if pullback from peak exceeds trail %
         const trailPct = settings.trailing_pct || 20;
-        if (pullbackFromPeak >= trailPct) {
-          exitReason = 'trailing_stop';
-        }
+        if (pullback >= trailPct) exitReason = 'trailing_stop';
       }
-
-      // Break-even: move stop to entry once trigger hit
       if (!exitReason && settings.break_even_enabled && currentPrice <= entryPrice) {
         exitReason = 'break_even';
       }

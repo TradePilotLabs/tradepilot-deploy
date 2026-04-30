@@ -1,0 +1,314 @@
+{
+  "info": {
+    "name": "TradePilot ATS",
+    "description": "Manual webhook triggers and trade execution tests for TradePilot ATS.\n\nSetup:\n1. Set the `base_url` variable to your ATS URL\n2. Login first to get a JWT token (stored automatically)\n3. Use the webhook calls to trigger signals",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url",        "value": "https://ats.tradepilotlabs.com" },
+    { "key": "daily_secret",    "value": "34d88237c1b7ad922fd3bcd299f1bb13f33d2bbc4297734f" },
+    { "key": "custom_secret",   "value": "3499d4fe70a757259017487fdae2881ed47c6d42b539aa23" },
+    { "key": "jwt_token",       "value": "" },
+    { "key": "admin_email",     "value": "pshridev28@gmail.com" },
+    { "key": "admin_password",  "value": "" }
+  ],
+  "item": [
+    {
+      "name": "🔐 Auth",
+      "item": [
+        {
+          "name": "Login (get JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.token) {",
+                  "  pm.collectionVariables.set('jwt_token', r.token);",
+                  "  console.log('Token saved:', r.token.slice(0,30) + '...');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"{{admin_password}}\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🚀 Webhooks — Trigger Signals",
+      "item": [
+        {
+          "name": "SPY CALL (ORB-15 format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"timestamp\": \"2026-04-30T10:30:00-0400\",\n  \"unmodifiedTicker\": \"SPY260430C715.0\",\n  \"suggestedOption\": \"SPY 04/30 715c\",\n  \"action\": \"open\",\n  \"direction\": \"calls\",\n  \"source\": \"tradepilot-orb15\",\n  \"price\": 714.50,\n  \"volume\": 45000,\n  \"stopLossPct\": 50,\n  \"orbHigh\": 714.80,\n  \"rsi\": 62.5\n}"
+            },
+            "description": "Triggers a SPY call signal in ORB-15 format. Adjust the strike in unmodifiedTicker and price to match current market."
+          }
+        },
+        {
+          "name": "SPY PUT (ORB-15 format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"timestamp\": \"2026-04-30T10:45:00-0400\",\n  \"unmodifiedTicker\": \"SPY260430P710.0\",\n  \"suggestedOption\": \"SPY 04/30 710p\",\n  \"action\": \"open\",\n  \"direction\": \"puts\",\n  \"source\": \"tradepilot-orb15\",\n  \"price\": 710.20,\n  \"volume\": 38000,\n  \"stopLossPct\": 50,\n  \"orbLow\": 710.50,\n  \"rsi\": 34.2\n}"
+            },
+            "description": "Triggers a SPY put signal in ORB-15 format."
+          }
+        },
+        {
+          "name": "QQQ CALL (ORB-15 format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"timestamp\": \"2026-04-30T10:30:00-0400\",\n  \"unmodifiedTicker\": \"QQQ260430C660.0\",\n  \"suggestedOption\": \"QQQ 04/30 660c\",\n  \"action\": \"open\",\n  \"direction\": \"calls\",\n  \"source\": \"tradepilot-orb15\",\n  \"price\": 659.80,\n  \"volume\": 30000,\n  \"stopLossPct\": 50,\n  \"orbHigh\": 659.50,\n  \"rsi\": 65.0\n}"
+            }
+          }
+        },
+        {
+          "name": "QQQ PUT (ORB-15 format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"timestamp\": \"2026-04-30T11:00:00-0400\",\n  \"unmodifiedTicker\": \"QQQ260430P655.0\",\n  \"suggestedOption\": \"QQQ 04/30 655p\",\n  \"action\": \"open\",\n  \"direction\": \"puts\",\n  \"source\": \"tradepilot-orb15\",\n  \"price\": 655.20,\n  \"volume\": 28000,\n  \"stopLossPct\": 50,\n  \"orbLow\": 655.80,\n  \"rsi\": 31.5\n}"
+            }
+          }
+        },
+        {
+          "name": "SPY CALL (legacy BUY_CALLS format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ticker\": \"SPY\",\n  \"action\": \"BUY_CALLS\",\n  \"signal\": \"A1\",\n  \"price\": 714.50,\n  \"stopPct\": 50\n}"
+            },
+            "description": "Triggers using the original legacy format — works for custom TradingView setups."
+          }
+        },
+        {
+          "name": "SPY PUT (legacy BUY_PUTS format)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{base_url}}/webhook/strategy/daily-trend?secret={{daily_secret}}",
+              "host": ["{{base_url}}"],
+              "path": ["webhook", "strategy", "daily-trend"],
+              "query": [{ "key": "secret", "value": "{{daily_secret}}" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ticker\": \"SPY\",\n  \"action\": \"BUY_PUTS\",\n  \"signal\": \"B1\",\n  \"price\": 710.20,\n  \"stopPct\": 50\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "📊 Positions & Trades",
+      "item": [
+        {
+          "name": "Get open positions",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/positions",
+            "description": "Returns all currently open positions being monitored."
+          }
+        },
+        {
+          "name": "Get trade history",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/trades",
+            "description": "Returns closed trade history."
+          }
+        },
+        {
+          "name": "Get today stats",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/stats",
+            "description": "Today's P&L, trade count, win rate."
+          }
+        },
+        {
+          "name": "🚨 Flatten All (emergency close)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/api/flatten-all",
+            "body": { "mode": "raw", "raw": "{}" },
+            "description": "Emergency: closes ALL open positions immediately at market price."
+          }
+        }
+      ]
+    },
+    {
+      "name": "⚙️ Settings",
+      "item": [
+        {
+          "name": "Get settings",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/api/settings"
+          }
+        },
+        {
+          "name": "Update settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/api/settings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trading_enabled\": true,\n  \"max_trades_per_day\": 1,\n  \"max_capital_per_trade\": 200,\n  \"stop_loss_pct\": 50,\n  \"max_contract_cost\": 2.00,\n  \"min_contract_cost\": 0.10\n}"
+            },
+            "description": "Update risk settings. Adjust max_capital_per_trade, stop_loss_pct, etc."
+          }
+        },
+        {
+          "name": "Enable trading",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/api/settings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trading_enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "Disable trading",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/api/settings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"trading_enabled\": false\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "🛠 Admin",
+      "item": [
+        {
+          "name": "Admin overview",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/admin/overview"
+          }
+        },
+        {
+          "name": "Webhook signal log",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": {
+              "raw": "{{base_url}}/admin/webhook-signals?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "webhook-signals"],
+              "query": [{ "key": "limit", "value": "20" }]
+            },
+            "description": "Shows the last 20 webhook signals received (all strategies)."
+          }
+        },
+        {
+          "name": "Check Polygon.io",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }],
+            "url": "{{base_url}}/admin/polygon-check",
+            "description": "Verifies Polygon.io API key is working and returns plan tier."
+          }
+        },
+        {
+          "name": "Fire test signal (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{base_url}}/admin/strategies/daily-trend/fire",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payload\": {\n    \"action\": \"open\",\n    \"direction\": \"calls\",\n    \"unmodifiedTicker\": \"SPY260430C715.0\",\n    \"price\": 714.50,\n    \"stopLossPct\": 50,\n    \"source\": \"manual-test\"\n  }\n}"
+            },
+            "description": "Fires a test signal through the strategy router (requires admin JWT). Same as a real webhook but authenticated via JWT instead of secret."
+          }
+        }
+      ]
+    }
+  ]
+}

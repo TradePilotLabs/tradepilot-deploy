@@ -37,7 +37,35 @@ function underlyingFromTv(tvSymbol) {
   return tvSymbol?.match(/^([A-Z]+)/)?.[1] || null;
 }
 
+// ─── Symbol conversion (OCC → Polygon) ───────────────────────
+// "SPY   260430C00715000" → "O:SPY260430C00715000"
+function occToPolygon(occSym) {
+  if (!occSym) return null;
+  const m = occSym.trim().match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/i);
+  if (!m) return null;
+  const [, root, date, type, strike] = m;
+  return `O:${root}${date}${type.toUpperCase()}${strike}`;
+}
+
 // ─── Live ask price (snapshot) ────────────────────────────────
+
+// Called by position monitor — takes OCC symbol from Redis position
+async function getOptionAskByOcc(occSym) {
+  const sym = occToPolygon(occSym);
+  if (!sym) return null;
+  const now    = Date.now();
+  const fromMs = now - 5 * 60_000;
+  try {
+    const res = await axios.get(
+      `${BASE}/v2/aggs/ticker/${sym}/range/1/minute/${fromMs}/${now}`,
+      { params: { adjusted: false, sort: 'desc', limit: 1, apiKey: apiKey() }, timeout: 5000 }
+    );
+    const bar = res.data?.results?.[0];
+    return bar ? parseFloat(bar.c) : null;
+  } catch {
+    return null;
+  }
+}
 
 async function getOptionAsk(tvSymbol) {
   const sym = toPolygonSymbol(tvSymbol);
@@ -119,4 +147,4 @@ async function checkConnection() {
   }
 }
 
-module.exports = { toPolygonSymbol, getOptionAsk, getOptionMinuteBars, getBarsForSignal, checkConnection };
+module.exports = { toPolygonSymbol, occToPolygon, getOptionAsk, getOptionAskByOcc, getOptionMinuteBars, getBarsForSignal, checkConnection };

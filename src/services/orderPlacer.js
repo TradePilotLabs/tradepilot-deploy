@@ -7,7 +7,14 @@ const { removePosition, incrDailyPnl } = require('../data/redis');
  * Returns the trade record saved to the DB.
  */
 async function openPosition({ userId, accountNumber, contract, quantity, signal, settings }) {
-  const orderType = settings.order_type === 'limit' ? 'Limit' : 'Market';
+  // When price is unknown, fall back to a Limit order at max_contract_cost so we
+  // never pay more than the user's configured cap — even without a live quote.
+  const priceUnknown = contract.mid === null || contract.mid === undefined;
+  const wantsLimit   = settings.order_type === 'limit' || priceUnknown;
+  const orderType    = wantsLimit ? 'Limit' : 'Market';
+  const limitPrice   = wantsLimit
+    ? (contract.ask ?? settings.max_contract_cost ?? 2.50)
+    : undefined;
 
   const order = {
     'order-type':    orderType,
@@ -23,9 +30,7 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
     ],
   };
 
-  if (orderType === 'Limit') {
-    order['price'] = contract.ask;
-  }
+  if (limitPrice !== undefined) order['price'] = limitPrice;
 
   console.log(`[ORDER] Opening ${quantity}x ${contract.symbol} @ ${orderType}`);
 

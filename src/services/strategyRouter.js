@@ -114,6 +114,7 @@ async function processForUser(user, strategy, signal, rawPayload) {
     // Track in Redis
     await addPosition(userId, trade.id, {
       tradeId:       trade.id,
+      tastyOrderId:  trade.tasty_order_id,
       optionSymbol:  contract.symbol,
       symbol:        signal.ticker,
       direction:     signal.direction,
@@ -123,7 +124,8 @@ async function processForUser(user, strategy, signal, rawPayload) {
       accountNumber,
       openedAt:      new Date().toISOString(),
       stopPct:       signal.stopPct || settings.stop_loss_pct || 40,
-      tpPct:         signal.tpPct   || strategy.default_tp_pct || null,
+      // TP: prefer signal value, then user setting, then strategy default
+      tpPct:         signal.tpPct || settings.take_profit_pct || strategy.default_tp_pct || null,
     });
 
     // Log success

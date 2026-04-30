@@ -162,6 +162,13 @@ async function createTrade(data) {
   return rows[0];
 }
 
+async function updateTradeEntryPrice(tradeId, entryPrice) {
+  await getPool().query(
+    `UPDATE trades SET entry_price = $2 WHERE id = $1 AND entry_price IS NULL`,
+    [tradeId, entryPrice]
+  );
+}
+
 async function closeTrade(tradeId, { exitPrice, exitReason, pnl }) {
   await getPool().query(
     `UPDATE trades SET
@@ -716,7 +723,7 @@ module.exports = {
   // Settings
   getOrCreateSettings, updateSettings,
   // Trades
-  createTrade, closeTrade, getOpenTrades, getTradeHistory,
+  createTrade, closeTrade, updateTradeEntryPrice, getOpenTrades, getTradeHistory,
   getTodayTradeCount, getTodayRealizedPnl,
   // P&L
   upsertDailyPnl, getDailyPnlHistory,
