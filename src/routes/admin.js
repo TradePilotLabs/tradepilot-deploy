@@ -23,9 +23,9 @@ router.get('/overview', async (req, res) => {
         COUNT(*) FILTER (WHERE subscription_status = 'past_due')       AS past_due,
         COUNT(*) FILTER (WHERE subscription_status NOT IN ('active','trialing') 
                             OR subscription_status IS NULL)             AS no_subscription,
-        COUNT(*) FILTER (WHERE trading_enabled = true
-          AND EXISTS (SELECT 1 FROM user_settings us WHERE us.user_id = users.id AND us.trading_enabled = true))
-                                                                        AS active_traders
+        COUNT(*) FILTER (WHERE EXISTS (
+          SELECT 1 FROM user_settings us
+          WHERE us.user_id = users.id AND us.trading_enabled = true))   AS active_traders
         FROM users`),
       pool.query(`SELECT COUNT(*) AS total FROM strategies`),
       pool.query(`SELECT COALESCE(SUM(pnl),0) AS total_pnl FROM trades WHERE status='closed'`),
