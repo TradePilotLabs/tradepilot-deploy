@@ -90,11 +90,11 @@ async function checkUserPositions(userId, positions) {
     for (const pos of positions) {
       if (!brokerSymbols.has(pos.optionSymbol)) {
         const lastPrice = priceMap[pos.optionSymbol] ?? pos.entryPrice ?? 0;
-        console.log(`[MONITOR] ${pos.optionSymbol} not found at broker — closed externally`);
-        await closePosition({
-          userId, accountNumber, position: pos,
-          exitReason: 'manual_close', currentPrice: lastPrice,
-        });
+        const reason    = isExpired(pos.optionSymbol) ? 'expired' : 'manual_close';
+        console.log(`[MONITOR] ${pos.optionSymbol} not found at broker — ${reason}`);
+        // Don't send a STC order — the position is already gone at the broker.
+        // Just sync TradePilot's records.
+        await closeLocalPosition({ userId, position: pos, exitReason: reason, exitPrice: lastPrice });
       }
     }
     // Re-filter to only positions still open after reconciliation
@@ -202,6 +202,30 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
     );
     await closePosition({ userId, accountNumber, position: pos, exitReason, currentPrice });
   }
+}
+
+// Close a position in TradePilot records without placing a broker order.
+// Used when we know the broker position is already gone (expired, manual close).
+async function closeLocalPosition({ userId, position, exitReason, exitPrice }) {
+  const { closeTrade } = require('../data/db');
+  const { removePosition, incrDailyPnl } = require('../data/redis');
+  const { calcPnl } = require('./orderPlacer');
+
+  const pnl = position.entryPrice ? calcPnl(position.entryPrice, exitPrice ?? 0, position.quantity) : 0;
+  await closeTrade(position.tradeId, { exitPrice: exitPrice ?? 0, exitReason, pnl });
+  await removePosition(userId, position.tradeId);
+  await incrDailyPnl(userId, pnl);
+  console.log(`[MONITOR] Local close: ${position.optionSymbol} | Reason: ${exitReason} | P&L: $${pnl.toFixed(2)}`);
+}
+
+// Extract YYMMDD from OCC symbol and check if the expiry date is in the past.
+// "SPY   260430C00715000" → expiry = 2026-04-30
+function isExpired(occSym) {
+  const m = (occSym || '').trim().match(/^[A-Z]+(\d{2})(\d{2})(\d{2})[CP]/i);
+  if (!m) return false;
+  const [, yy, mm, dd] = m;
+  const expiry = new Date(`20${yy}-${mm}-${dd}T21:00:00Z`); // options expire at ~5 PM ET
+  return Date.now() > expiry.getTime();
 }
 
 module.exports = { startPositionMonitor, stopPositionMonitor, runMonitorCycle };

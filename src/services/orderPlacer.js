@@ -143,7 +143,14 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
   try {
     await placeOrder(userId, accountNumber, order);
   } catch (err) {
-    console.error(`[ORDER] Close order failed for ${position.optionSymbol}:`, err.message);
+    // If TT says "uncovered" or "not approved", the position is already gone at the broker
+    // (expired or manually closed). Log and continue with local cleanup.
+    const msg = err.message || '';
+    if (msg.includes('uncovered') || msg.includes('not approved') || msg.includes('preflight')) {
+      console.warn(`[ORDER] Close order rejected by broker (position likely already closed): ${msg}`);
+    } else {
+      console.error(`[ORDER] Close order failed for ${position.optionSymbol}:`, msg);
+    }
   }
 
   const exitPrice = currentPrice || position.entryPrice;
