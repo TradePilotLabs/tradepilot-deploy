@@ -39,30 +39,27 @@ async function selectContract(userId, {
         mid = await fetchOptionPrice(signalOptionSymbol);
       }
 
-      if (mid === null) {
-        throw new Error(
-          `Cannot price ${signalOptionSymbol} — no price in signal and Polygon returned no data (market closed?). Refusing to place a blind market order.`
-        );
+      // Price filter — only enforce when we actually have a price
+      if (mid !== null) {
+        if (minContractCost && mid < minContractCost) {
+          throw new Error(
+            `Option ${signalOptionSymbol} mid=$${mid} is below minContractCost $${minContractCost}`
+          );
+        }
+        if (maxContractCost && mid > maxContractCost) {
+          throw new Error(
+            `Option ${signalOptionSymbol} mid=$${mid} exceeds maxContractCost $${maxContractCost}`
+          );
+        }
       }
 
-      if (minContractCost && mid < minContractCost) {
-        throw new Error(
-          `Option ${signalOptionSymbol} mid=$${mid} is below minContractCost $${minContractCost}`
-        );
-      }
-      if (maxContractCost && mid > maxContractCost) {
-        throw new Error(
-          `Option ${signalOptionSymbol} mid=$${mid} exceeds maxContractCost $${maxContractCost}`
-        );
-      }
-
-      const source = signalOptionPrice ? 'signal' : 'Polygon';
-      console.log(`[CONTRACT] Using signal option ${occ} mid=$${mid} (source: ${source})`);
+      const source = signalOptionPrice ? 'signal' : (mid !== null ? 'Polygon' : 'unknown');
+      console.log(`[CONTRACT] Using signal option ${occ} mid=${mid !== null ? `$${mid}` : 'unknown'} (source: ${source})`);
       return {
         symbol:      occ,
         strikePrice: parseStrikeFromTv(signalOptionSymbol),
-        bid:         mid * 0.98,
-        ask:         mid * 1.02,
+        bid:         mid !== null ? mid * 0.98 : null,
+        ask:         mid !== null ? mid * 1.02 : null,
         mid,
         expiration:  today,
         optionType,
@@ -104,18 +101,14 @@ async function selectContract(userId, {
   const tvSym = occToTv(best.sym);
   const mid   = tvSym ? await fetchOptionPrice(tvSym) : null;
 
-  if (mid === null) {
-    throw new Error(
-      `Cannot price ${best.sym} — Polygon returned no data (market may be closed or option illiquid). Refusing to place a blind market order.`
-    );
+  if (mid !== null) {
+    if (minContractCost && mid < minContractCost)
+      throw new Error(`ATM contract mid=$${mid} below minContractCost $${minContractCost}`);
+    if (maxContractCost && mid > maxContractCost)
+      throw new Error(`ATM contract mid=$${mid} exceeds maxContractCost $${maxContractCost}`);
   }
 
-  if (minContractCost && mid < minContractCost)
-    throw new Error(`ATM contract mid=$${mid} below minContractCost $${minContractCost}`);
-  if (maxContractCost && mid > maxContractCost)
-    throw new Error(`ATM contract mid=$${mid} exceeds maxContractCost $${maxContractCost}`);
-
-  console.log(`[CONTRACT] Chain selection ${best.sym} mid=$${mid}`);
+  console.log(`[CONTRACT] Chain selection ${best.sym} mid=${mid !== null ? `$${mid}` : 'unknown'}`);
   return {
     symbol:      best.sym,
     strikePrice: best.sp,
