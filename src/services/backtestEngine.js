@@ -14,26 +14,99 @@ const { isSkipDay } = require('../data/marketEvents');
 
 const TASTY_FEE_PER_CONTRACT = 0.60;
 
-// Walks bars to find the first minute where TP or SL was crossed.
-// Returns outcome, exitPrice, pnlPct, and the bar's timestamp (exitTimeMs).
-// SL wins when both are hit in the same bar (conservative — intra-bar order unknown).
-function resolveFromBars(bars, entryPrice, takeProfitPct, stopLossPct, maxExitMs) {
+/**
+ * Walk Polygon minute bars simulating the same exit logic as positionMonitor.
+ * Tracks peak price bar-by-bar so trailing stops reflect real intraday price movement.
+ *
+ * settings fields used:
+ *   stopLossPct          — hard floor stop (always applied)
+ *   takeProfitPct        — fixed TP ceiling (applied when exitStrategy='oco')
+ *   exitStrategy         — 'oco' | 'trailing'
+ *   trailingEnabled      — single trailing stop
+ *   trailingTriggerPct   — profit % to activate trailing
+ *   trailingPct          — pullback % from peak (static mode)
+ *   trailingMode         — 'static' | 'dynamic'
+ *   trailingStopMultiplier — peak multiplier for dynamic mode (e.g. 0.95)
+ *   breakEvenEnabled     — move stop to entry once trigger hit
+ *   multiTierEnabled     — use tiered trailing instead of single
+ *   trailingTiers        — [{profitTrigger, trailPercent}, ...]
+ */
+function resolveFromBars(bars, entryPrice, settings, maxExitMs) {
+  const {
+    stopLossPct          = 50,
+    takeProfitPct        = 60,
+    exitStrategy         = 'oco',
+    trailingEnabled      = false,
+    trailingTriggerPct   = 4,
+    trailingPct          = 20,
+    trailingMode         = 'static',
+    trailingStopMultiplier = 0.95,
+    breakEvenEnabled     = false,
+    multiTierEnabled     = false,
+    trailingTiers        = [],
+  } = settings;
+
+  const slThreshold = entryPrice * (1 - stopLossPct / 100);
   const tpThreshold = entryPrice * (1 + takeProfitPct / 100);
-  const slThreshold = entryPrice * (1 - stopLossPct  / 100);
-  const window = maxExitMs ? bars.filter(b => b.t <= maxExitMs) : bars;
+  const useTrailing = exitStrategy === 'trailing' && (trailingEnabled || multiTierEnabled);
+
+  let peakPrice = entryPrice;
+  const window  = maxExitMs ? bars.filter(b => b.t <= maxExitMs) : bars;
 
   for (const bar of window) {
+    // Track peak using bar high (same as position monitor uses mark price)
+    if (bar.h > peakPrice) peakPrice = bar.h;
+    const peakPct = ((peakPrice - entryPrice) / entryPrice) * 100;
+
+    // ── 1. Hard stop loss (always, checked against bar low) ──────
     if (bar.l <= slThreshold) {
-      const pct = -stopLossPct / 100;
-      return { outcome: 'stop_loss',   pnlPct: pct,
-               exitPrice: parseFloat((entryPrice * (1 + pct)).toFixed(4)),
-               exitTimeMs: bar.t };
+      return { outcome: 'stop_loss', pnlPct: -stopLossPct / 100,
+               exitPrice: parseFloat(slThreshold.toFixed(4)), exitTimeMs: bar.t };
     }
-    if (bar.h >= tpThreshold) {
-      const pct = takeProfitPct / 100;
-      return { outcome: 'take_profit', pnlPct: pct,
-               exitPrice: parseFloat((entryPrice * (1 + pct)).toFixed(4)),
-               exitTimeMs: bar.t };
+
+    // ── 2. OCO take profit ────────────────────────────────────────
+    if (!useTrailing && bar.h >= tpThreshold) {
+      return { outcome: 'take_profit', pnlPct: takeProfitPct / 100,
+               exitPrice: parseFloat(tpThreshold.toFixed(4)), exitTimeMs: bar.t };
+    }
+
+    // ── 3. Multi-tier trailing ────────────────────────────────────
+    if (useTrailing && multiTierEnabled && trailingTiers.length) {
+      const sorted     = [...trailingTiers].sort((a, b) => a.profitTrigger - b.profitTrigger);
+      const activeTier = sorted.filter(t => peakPct >= t.profitTrigger).pop();
+      if (activeTier) {
+        const trailStop = peakPrice * (1 - activeTier.trailPercent / 100);
+        if (bar.l <= trailStop) {
+          const ep = parseFloat(trailStop.toFixed(4));
+          return { outcome: 'trailing_stop', pnlPct: (ep - entryPrice) / entryPrice,
+                   exitPrice: ep, exitTimeMs: bar.t };
+        }
+      }
+    }
+
+    // ── 4. Single trailing stop ───────────────────────────────────
+    if (useTrailing && trailingEnabled && !multiTierEnabled && peakPct >= trailingTriggerPct) {
+      const trailStop = trailingMode === 'dynamic'
+        ? peakPrice * trailingStopMultiplier
+        : peakPrice * (1 - trailingPct / 100);
+
+      if (bar.l <= trailStop) {
+        const ep = parseFloat(trailStop.toFixed(4));
+        return { outcome: 'trailing_stop', pnlPct: (ep - entryPrice) / entryPrice,
+                 exitPrice: ep, exitTimeMs: bar.t };
+      }
+      // Break-even: exit at entry if price pulls back through it
+      if (breakEvenEnabled && bar.l <= entryPrice) {
+        return { outcome: 'break_even', pnlPct: 0,
+                 exitPrice: parseFloat(entryPrice.toFixed(4)), exitTimeMs: bar.t };
+      }
+    }
+
+    // ── 5. TP cap when trailing is active ─────────────────────────
+    // Still respect a hard TP ceiling even with trailing (optional upper limit)
+    if (useTrailing && bar.h >= tpThreshold) {
+      return { outcome: 'take_profit', pnlPct: takeProfitPct / 100,
+               exitPrice: parseFloat(tpThreshold.toFixed(4)), exitTimeMs: bar.t };
     }
   }
 
@@ -41,7 +114,7 @@ function resolveFromBars(bars, entryPrice, takeProfitPct, stopLossPct, maxExitMs
   const exitPrice = lastBar?.c ?? entryPrice;
   return { outcome: 'market_close',
            pnlPct:     (exitPrice - entryPrice) / entryPrice,
-           exitPrice,
+           exitPrice:  parseFloat(exitPrice.toFixed(4)),
            exitTimeMs: lastBar?.t ?? maxExitMs };
 }
 
@@ -274,7 +347,7 @@ function runBacktest(signals, settings) {
     const maxExitMs = timeLimitMs ? Math.min(timeLimitMs, sessionEndMs) : sessionEndMs;
 
     // Resolve outcome NOW from Polygon bars so exit time is accurate
-    const resolved = resolveFromBars(sig._bars, entryPrice, takeProfitPct, stopLossPct, maxExitMs);
+    const resolved = resolveFromBars(sig._bars, entryPrice, settings, maxExitMs);
     const outcome  = timeLimitMs && timeLimitMs < sessionEndMs && resolved.outcome === 'market_close'
       ? 'time_limit'
       : resolved.outcome;
