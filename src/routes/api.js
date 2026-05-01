@@ -204,6 +204,30 @@ router.get('/webhook-info', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/positions/:tradeId/close — close a single position at market price
+router.post('/positions/:tradeId/close', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { tradeId } = req.params;
+    const { closePosition } = require('../services/orderPlacer');
+    const { getPosition }   = require('../data/redis');
+
+    const tokens = await getTastyTokens(userId);
+    if (!tokens?.account_number) return res.status(400).json({ error: 'No broker connected' });
+
+    const pos = await getPosition(userId, tradeId);
+    if (!pos) return res.status(404).json({ error: 'Position not found' });
+    if (pos.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
+
+    await closePosition({ userId, accountNumber: tokens.account_number,
+      position: pos, exitReason: 'manual_close', currentPrice: pos.currentPrice || null });
+
+    res.json({ closed: true, tradeId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/flatten-all — emergency close all open positions for the current user
 router.post('/flatten-all', async (req, res) => {
   try {
