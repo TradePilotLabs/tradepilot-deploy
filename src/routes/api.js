@@ -107,8 +107,8 @@ router.get('/stats', async (req, res) => {
     const totalWins   = pnlHistory.reduce((s, d) => s + (d.win_count   || 0), 0);
     const totalPnl    = pnlHistory.reduce((s, d) => s + parseFloat(d.total_pnl || 0), 0);
 
-    const todayTrades    = todayResult.rows;
-    const closedToday    = todayTrades.filter(t => t.status === 'closed' || t.exit_price != null);
+    const todayTrades    = todayResult.rows.filter(t => t.status !== 'cancelled');
+    const closedToday    = todayTrades.filter(t => t.status === 'closed');
     const todayWins      = closedToday.filter(t => parseFloat(t.pnl || 0) > 0).length;
     const todayLosses    = closedToday.filter(t => parseFloat(t.pnl || 0) <= 0).length;
     const todayGrossPnl  = closedToday.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);

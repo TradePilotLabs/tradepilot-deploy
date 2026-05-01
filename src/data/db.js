@@ -202,7 +202,7 @@ async function getOpenTrades(userId) {
 
 async function getTradeHistory(userId, limit = 50, offset = 0) {
   const { rows } = await getPool().query(
-    `SELECT * FROM trades WHERE user_id = $1
+    `SELECT * FROM trades WHERE user_id = $1 AND status != 'cancelled'
      ORDER BY entry_time DESC LIMIT $2 OFFSET $3`,
     [userId, limit, offset]
   );
