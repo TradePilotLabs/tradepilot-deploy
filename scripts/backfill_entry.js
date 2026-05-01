@@ -1,6 +1,7 @@
-const { connectDB, getPool } = require('../src/data/db');
-const { connectRedis }       = require('../src/data/redis');
-const axios                  = require('axios');
+const { connectDB, getPool, getTastyTokens, updateTastyAccessToken } = require('../src/data/db');
+const { connectRedis } = require('../src/data/redis');
+const { decrypt }      = require('../src/services/encryption');
+const axios            = require('axios');
 
 const USER_ID = '185c2872-2ab4-4865-b3df-84fe88fa80ff';
 const TRADES  = [
@@ -14,58 +15,54 @@ async function run() {
   await new Promise(r => setTimeout(r, 1500));
   const pool = getPool();
 
-  // Get fresh token (app handles refresh internally via tastyClient)
-  const { getTastyTokens, updateTastyAccessToken } = require('../src/data/db');
-  const { decrypt } = require('../src/services/encryption');
   const tokens = await getTastyTokens(USER_ID);
   const accountNumber = tokens.account_number;
-  console.log('Account:', accountNumber);
-  console.log('Token expires:', tokens.expires_at);
-
-  // Refresh token if needed
   let accessToken = tokens.access_token;
+
+  // Refresh if expired
   if (tokens.expires_at && new Date(tokens.expires_at) < new Date(Date.now() + 60000)) {
-    console.log('Token expired, refreshing...');
-    try {
-      const clientId     = decrypt(tokens.client_id_encrypted);
-      const clientSecret = decrypt(tokens.client_secret_encrypted);
-      const res = await axios.post('https://api.tastytrade.com/oauth/token',
-        new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId,
-          client_secret: clientSecret, refresh_token: tokens.refresh_token }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      accessToken = res.data.access_token;
-      const expiresAt = new Date(Date.now() + res.data.expires_in * 1000);
-      await updateTastyAccessToken(USER_ID, accessToken, expiresAt);
-      console.log('Token refreshed');
-    } catch (e) {
-      console.error('Token refresh failed:', e.response?.data || e.message);
-    }
+    const clientId     = decrypt(tokens.client_id_encrypted);
+    const clientSecret = decrypt(tokens.client_secret_encrypted);
+    const r = await axios.post('https://api.tastytrade.com/oauth/token',
+      new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId,
+        client_secret: clientSecret, refresh_token: tokens.refresh_token }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    accessToken = r.data.access_token;
+    await updateTastyAccessToken(USER_ID, accessToken, new Date(Date.now() + r.data.expires_in * 1000));
+    console.log('Token refreshed');
   }
 
   for (const { tradeId, orderId } of TRADES) {
     try {
-      const url = `https://api.tastytrade.com/accounts/${accountNumber}/orders/${orderId}`;
-      console.log(`\nFetching ${url}`);
-      const res = await axios.get(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        validateStatus: () => true,
-      });
-      console.log(`  HTTP ${res.status}:`, JSON.stringify(res.data).slice(0, 400));
-
-      const order     = res.data?.data?.order || res.data?.data || res.data;
+      const res = await axios.get(
+        `https://api.tastytrade.com/accounts/${accountNumber}/orders/${orderId}`,
+        { headers: { Authorization: `Bearer ${accessToken}` }, validateStatus: () => true }
+      );
+      const order     = res.data?.data;
       const status    = order?.status;
       const fillPrice = parseFloat(order?.['avg-fill-price'] || 0);
-      console.log(`  status=${status} fill=$${fillPrice}`);
 
-      if (fillPrice > 0) {
+      // Also check fills array for actual fill price
+      const fills = order?.legs?.[0]?.fills || order?.fills || [];
+      const legFill = fills[0]?.['fill-price'] ? parseFloat(fills[0]['fill-price']) : null;
+
+      console.log(`Order ${orderId}: status=${status} avg-fill=${order?.['avg-fill-price']} leg-fill=${legFill}`);
+      console.log(`  Full order keys:`, Object.keys(order || {}).join(', '));
+
+      const price = fillPrice || legFill;
+      if (price > 0) {
         await pool.query('UPDATE trades SET entry_price=$1 WHERE id=$2 AND entry_price IS NULL',
-          [fillPrice, tradeId]);
-        console.log(`  ✓ Updated entry_price=$${fillPrice}`);
+          [price, tradeId]);
+        console.log(`  ✓ Updated entry_price=$${price} for ${tradeId}`);
+      } else {
+        console.log(`  No fill price found for ${orderId}`);
       }
     } catch (e) {
       console.error(`Order ${orderId}:`, e.message);
     }
   }
+
+  await pool.end();
   process.exit(0);
 }
 run().catch(e => { console.error(e); process.exit(1); });
