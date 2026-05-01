@@ -1,8 +1,9 @@
-const { connectDB, getPool, getTastyTokens } = require('../src/data/db');
+const { connectDB, getTastyTokens } = require('../src/data/db');
 const { connectRedis } = require('../src/data/redis');
 const axios = require('axios');
 
 const USER_ID = '185c2872-2ab4-4865-b3df-84fe88fa80ff';
+const BASE    = 'https://api.tastytrade.com';
 
 async function run() {
   connectDB();
@@ -12,34 +13,26 @@ async function run() {
   const tokens = await getTastyTokens(USER_ID);
   const { access_token, account_number } = tokens;
   console.log('Account:', account_number);
+  console.log('Token scopes (from JWT):', (() => {
+    try { return JSON.parse(Buffer.from(access_token.split('.')[1], 'base64').toString()).scope; }
+    catch { return 'unknown'; }
+  })());
 
-  const r = await axios.get(
-    `https://api.tastytrade.com/accounts/${account_number}/positions`,
-    { headers: { Authorization: `Bearer ${access_token}` } }
-  );
-  const items = r.data?.data?.items || [];
-  console.log(`\nFound ${items.length} position(s):\n`);
-  items.forEach(pos => {
-    console.log('Symbol:          ', pos.symbol);
-    console.log('Mark:            ', pos['mark']);
-    console.log('Mark-price:      ', pos['mark-price']);
-    console.log('Close-price:     ', pos['close-price']);
-    console.log('Market-value:    ', pos['market-value']);
-    console.log('Average-open:    ', pos['average-open-price']);
-    console.log('Multiplier:      ', pos['multiplier']);
-    console.log('All keys:        ', Object.keys(pos).join(', '));
-    console.log('---');
-  });
+  const endpoints = [
+    '/quote-streamer-tokens',
+    '/api-quote-tokens',
+    '/market-data/quote-streamer-tokens',
+    '/market-data/quote-tokens',
+  ];
 
-  // Also try quote streamer token endpoint
-  try {
-    const qr = await axios.get(
-      'https://api.tastytrade.com/quote-streamer-tokens',
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    );
-    console.log('\nQuote streamer token response:', JSON.stringify(qr.data).slice(0, 300));
-  } catch (e) {
-    console.log('\nQuote streamer tokens:', e.response?.status, e.message);
+  for (const ep of endpoints) {
+    try {
+      const r = await axios.get(BASE + ep, { headers: { Authorization: `Bearer ${access_token}` }, validateStatus: () => true });
+      console.log(`\n${ep}: HTTP ${r.status}`);
+      if (r.status === 200) console.log('  Data:', JSON.stringify(r.data).slice(0, 300));
+    } catch (e) {
+      console.log(`${ep}: ERROR ${e.message}`);
+    }
   }
 
   process.exit(0);
