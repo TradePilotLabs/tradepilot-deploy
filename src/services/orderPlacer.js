@@ -1,4 +1,4 @@
-const { placeOrder, cancelOrder, getOrder, placeComplexOrder } = require('./tastyClient');
+const { placeOrder, cancelOrder, getOrder, placeComplexOrder, cancelComplexOrder } = require('./tastyClient');
 const { createTrade, closeTrade, cancelTrade, updateTradeEntryPrice } = require('../data/db');
 const { removePosition, updatePosition, incrDailyPnl } = require('../data/redis');
 
@@ -225,9 +225,39 @@ async function placeExitOrders({ userId, accountNumber, position }) {
 }
 
 /**
- * Places a closing STC (Sell to Close) order.
+ * Places a closing STC (Sell to Close) market order.
+ *
+ * If the position has active exit orders at TastyTrade (OCO complex order
+ * or trailing stop order), those must be cancelled FIRST — otherwise TT
+ * rejects the manual close with a preflight failure because the position
+ * would be "double-covered".
  */
 async function closePosition({ userId, accountNumber, position, exitReason, currentPrice }) {
+  // ── Cancel any existing exit orders before placing manual close ──
+  if (position.complexOrderId) {
+    try {
+      await cancelComplexOrder(userId, accountNumber, position.complexOrderId);
+      console.log(`[ORDER] Cancelled OCO complex order ${position.complexOrderId} before manual close`);
+    } catch (err) {
+      // May already be filled/cancelled — log and continue
+      console.warn(`[ORDER] Could not cancel OCO ${position.complexOrderId}: ${err.message}`);
+    }
+  }
+
+  if (position.stopOrderId) {
+    try {
+      await cancelOrder(userId, accountNumber, position.stopOrderId);
+      console.log(`[ORDER] Cancelled stop order ${position.stopOrderId} before manual close`);
+    } catch (err) {
+      console.warn(`[ORDER] Could not cancel stop ${position.stopOrderId}: ${err.message}`);
+    }
+  }
+
+  // ── Small delay to let TT process cancellations ──────────────
+  if (position.complexOrderId || position.stopOrderId) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+
   const order = {
     'order-type':    'Market',
     'time-in-force': 'Day',
@@ -244,16 +274,24 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
 
   console.log(`[ORDER] Closing ${position.quantity}x ${position.optionSymbol} | Reason: ${exitReason}`);
 
+  let closedAtBroker = false;
   try {
     await placeOrder(userId, accountNumber, order);
+    closedAtBroker = true;
   } catch (err) {
-    // If TT says "uncovered" or "not approved", the position is already gone at the broker
-    // (expired or manually closed). Log and continue with local cleanup.
     const msg = err.message || '';
-    if (msg.includes('uncovered') || msg.includes('not approved') || msg.includes('preflight')) {
-      console.warn(`[ORDER] Close order rejected by broker (position likely already closed): ${msg}`);
+    if (msg.includes('uncovered') || msg.includes('not approved')) {
+      // Position already gone at broker (expired / manually closed there)
+      console.warn(`[ORDER] Close order rejected — position already gone at broker: ${msg}`);
+      closedAtBroker = true; // treat as closed since it no longer exists
+    } else if (msg.includes('preflight')) {
+      // Preflight failed — log the full error so we can debug
+      console.error(`[ORDER] Close order preflight failed for ${position.optionSymbol}: ${msg}`);
+      // Don't clean up locally — position still open at TT
+      throw err;
     } else {
       console.error(`[ORDER] Close order failed for ${position.optionSymbol}:`, msg);
+      throw err;
     }
   }
 
