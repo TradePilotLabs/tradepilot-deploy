@@ -126,8 +126,9 @@ async function processForUser(user, strategy, signal, rawPayload) {
       peakPrice:     contract.mid,
       accountNumber,
       openedAt:      new Date().toISOString(),
-      stopPct:        signal.stopPct || settings.stop_loss_pct || 40,
-      tpPct:          signal.tpPct || settings.take_profit_pct || strategy.default_tp_pct || null,
+      stopPct:        signal.stopPct || parseFloat(settings.stop_loss_pct) || 40,
+      // TP comes from user's trading settings — never from strategy defaults
+      tpPct:          signal.tpPct || parseFloat(settings.take_profit_pct) || 60,
       exitStrategy:   settings.exit_strategy || 'oco',
     });
 

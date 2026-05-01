@@ -68,6 +68,16 @@ async function checkUserPositions(userId, positions) {
     console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);
   }
 
+  // ── 1b. Write current mark price to Redis for every position ──
+  // This lets the dashboard show live price (up AND down), not just peak.
+  for (const pos of positions) {
+    const mark = priceMap[pos.optionSymbol];
+    if (mark && mark !== pos.currentPrice) {
+      await updatePosition(userId, pos.tradeId, { currentPrice: mark });
+      pos.currentPrice = mark;
+    }
+  }
+
   // ── 2. Recover missing entry prices from TastyTrade fill ─────
   for (const pos of positions) {
     if (!pos.entryPrice && pos.tastyOrderId) {
@@ -153,7 +163,7 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
 
   // Track peak — if price moved up and trailing mode, update the stop order at TT
   if (currentPrice > (pos.peakPrice || entryPrice)) {
-    await updatePosition(userId, pos.tradeId, { peakPrice: currentPrice });
+    await updatePosition(userId, pos.tradeId, { peakPrice: currentPrice, currentPrice });
     pos.peakPrice = currentPrice;
 
     // Update the live stop order at TastyTrade when peak advances
