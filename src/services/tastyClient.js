@@ -116,8 +116,15 @@ async function cancelOrder(userId, accountNumber, orderId) {
 }
 
 async function getOrder(userId, accountNumber, orderId) {
+  // TT order endpoint returns { data: { id, status, legs: [...], ... }, context }
+  // api() already unwraps the axios response to the JSON body, so res.data is the order
   const res = await api(userId, 'GET', `/accounts/${accountNumber}/orders/${orderId}`);
-  return res.data?.order;
+  return res.data;
+}
+
+async function getOrders(userId, accountNumber, params = {}) {
+  const res = await api(userId, 'GET', `/accounts/${accountNumber}/orders`, params);
+  return res.data?.items || [];
 }
 
 async function getOpenOrders(userId, accountNumber) {
@@ -141,6 +148,7 @@ module.exports = {
   placeOrder,
   cancelOrder,
   getOrder,
+  getOrders,
   getOpenOrders,
   getPositions,
 };

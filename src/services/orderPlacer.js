@@ -107,7 +107,8 @@ async function tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId, canc
   catch { return false; }
 
   const status    = (order?.status || '').toLowerCase();
-  const fillPrice = parseFloat(order?.['avg-fill-price'] || 0);
+  // Fill price is in legs[0].fills[0]['fill-price'] (avg-fill-price field is absent in REST response)
+  const fillPrice = parseFloat(order?.legs?.[0]?.fills?.[0]?.['fill-price'] || 0);
 
   if (status === 'filled' && fillPrice > 0) {
     await updateTradeEntryPrice(tradeId, fillPrice);

@@ -1,6 +1,5 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
 const { getPositions, getOrder }              = require('./tastyClient');
-const { getOptionAskByOcc }                   = require('./polygonClient');
 const { closePosition }                       = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
 const { getOrCreateSettings, getTastyTokens,
@@ -49,23 +48,33 @@ async function checkUserPositions(userId, positions) {
   if (!tokens?.account_number) return;
   const accountNumber = tokens.account_number;
 
-  // ── 1. Build live price map via Polygon ──────────────────────
-  // TastyTrade's REST /market-data/quotes endpoint is not available;
-  // Polygon minute bars are the reliable source for live option prices.
-  const priceMap = {};
-  for (const pos of positions) {
-    const price = await getOptionAskByOcc(pos.optionSymbol);
-    if (price !== null) priceMap[pos.optionSymbol] = price;
+  // ── 1. Fetch broker positions — live pricing + reconciliation ──
+  // TastyTrade's /market-data/quotes REST endpoint is 404.
+  // The positions endpoint returns mark-price (real-time mid from the
+  // exchange), which is the same price TastyTrade uses for its own fills —
+  // more accurate than Polygon agg bars for monitoring SL/TP.
+  let brokerPositions = [];
+  let brokerSymbols   = new Set();
+  const priceMap      = {};
+  try {
+    brokerPositions = await getPositions(userId, accountNumber);
+    for (const bp of brokerPositions) {
+      const sym  = bp['symbol'];
+      const mark = parseFloat(bp['mark-price'] || bp['mark'] || bp['close-price'] || 0);
+      if (sym && mark > 0) priceMap[sym] = mark;
+    }
+    brokerSymbols = new Set(brokerPositions.map(p => p['symbol']));
+  } catch (err) {
+    console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);
   }
 
   // ── 2. Recover missing entry prices from TastyTrade fill ─────
-  // When an order is placed without a known price, entry_price is null.
-  // Poll the order fill to backfill it.
   for (const pos of positions) {
     if (!pos.entryPrice && pos.tastyOrderId) {
       try {
         const order = await getOrder(userId, accountNumber, pos.tastyOrderId);
-        const fill  = parseFloat(order?.['avg-fill-price'] || order?.['price'] || 0);
+        // Fill price lives in legs[0].fills[0]['fill-price']
+        const fill = parseFloat(order?.legs?.[0]?.fills?.[0]?.['fill-price'] || 0);
         if (fill > 0) {
           await updatePosition(userId, pos.tradeId, { entryPrice: fill, peakPrice: fill });
           await updateTradeEntryPrice(pos.tradeId, fill);
@@ -78,13 +87,6 @@ async function checkUserPositions(userId, positions) {
   }
 
   // ── 3. Reconcile: detect positions closed outside TradePilot ─
-  // If a position exists in Redis but is no longer at the broker,
-  // it was manually closed — sync the DB record accordingly.
-  let brokerSymbols = new Set();
-  try {
-    const brokerPositions = await getPositions(userId, accountNumber);
-    brokerSymbols = new Set(brokerPositions.map(p => p['symbol']));
-  } catch { /* non-fatal — skip reconciliation this cycle */ }
 
   if (brokerSymbols.size > 0) {
     for (const pos of positions) {
