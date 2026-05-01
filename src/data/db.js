@@ -169,6 +169,13 @@ async function updateTradeEntryPrice(tradeId, entryPrice) {
   );
 }
 
+async function updateComplexOrderId(tradeId, complexOrderId) {
+  await getPool().query(
+    `UPDATE trades SET complex_order_id=$2 WHERE id=$1`,
+    [tradeId, complexOrderId]
+  );
+}
+
 async function cancelTrade(tradeId) {
   await getPool().query(
     `UPDATE trades SET status='cancelled', exit_reason='order_not_filled', exit_time=NOW()
@@ -735,7 +742,7 @@ module.exports = {
   // Settings
   getOrCreateSettings, updateSettings,
   // Trades
-  createTrade, closeTrade, cancelTrade, updateTradeEntryPrice, getOpenTrades, getTradeHistory,
+  createTrade, closeTrade, cancelTrade, updateTradeEntryPrice, updateComplexOrderId, getOpenTrades, getTradeHistory,
   getTodayTradeCount, getTodayRealizedPnl,
   // P&L
   upsertDailyPnl, getDailyPnlHistory,

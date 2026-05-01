@@ -139,6 +139,18 @@ async function getPositions(userId, accountNumber) {
   return res.data?.items || [];
 }
 
+// ─── Complex (OCO) orders ─────────────────────────────────────
+
+async function placeComplexOrder(userId, accountNumber, complexOrder) {
+  const res = await api(userId, 'POST', `/accounts/${accountNumber}/complex-orders`, complexOrder);
+  return res.data;
+}
+
+async function cancelComplexOrder(userId, accountNumber, complexOrderId) {
+  const res = await api(userId, 'DELETE', `/accounts/${accountNumber}/complex-orders/${complexOrderId}`);
+  return res.data;
+}
+
 module.exports = {
   getAccounts,
   getAccountBalances,
@@ -151,4 +163,6 @@ module.exports = {
   getOrders,
   getOpenOrders,
   getPositions,
+  placeComplexOrder,
+  cancelComplexOrder,
 };

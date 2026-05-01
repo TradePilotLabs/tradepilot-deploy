@@ -1,5 +1,5 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
-const { getPositions, getOrder }              = require('./tastyClient');
+const { getPositions, getOrder, placeOrder, cancelOrder } = require('./tastyClient');
 const { closePosition }                       = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
 const { getOrCreateSettings, getTastyTokens,
@@ -131,15 +131,37 @@ async function checkUserPositions(userId, positions) {
 }
 
 async function checkExitConditions({ userId, accountNumber, pos, currentPrice, settings }) {
-  const entryPrice = pos.entryPrice;
+  const entryPrice    = pos.entryPrice;
   if (!entryPrice || entryPrice <= 0) return;
+
+  const exitStrategy  = pos.exitStrategy || settings.exit_strategy || 'oco';
+
+  // For OCO positions TastyTrade manages TP/SL directly — only enforce hard stop
+  // and update the trailing stop order if price moves in our favor.
+  if (exitStrategy === 'oco') {
+    // Hard stop only — OCO bracket handles TP and normal SL
+    const stopPct  = pos.stopPct || settings.stop_loss_pct || 40;
+    const pricePct = ((currentPrice - entryPrice) / entryPrice) * 100;
+    if (pricePct <= -Math.abs(stopPct)) {
+      console.log(`[MONITOR] Hard stop (OCO fallback) | ${pos.optionSymbol} | ${pricePct.toFixed(1)}%`);
+      await closePosition({ userId, accountNumber, position: pos, exitReason: 'stop_loss', currentPrice });
+    }
+    return;
+  }
 
   const pricePct = ((currentPrice - entryPrice) / entryPrice) * 100;
 
-  // Track peak
+  // Track peak — if price moved up and trailing mode, update the stop order at TT
   if (currentPrice > (pos.peakPrice || entryPrice)) {
     await updatePosition(userId, pos.tradeId, { peakPrice: currentPrice });
     pos.peakPrice = currentPrice;
+
+    // Update the live stop order at TastyTrade when peak advances
+    if (pos.stopOrderId) {
+      const stopPct    = pos.stopPct || settings.stop_loss_pct || 40;
+      const newStop    = parseFloat((currentPrice * (1 - Math.abs(stopPct) / 100)).toFixed(2));
+      await updateTrailingStop({ userId, accountNumber, pos, newStop });
+    }
   }
   const peakPrice = pos.peakPrice || entryPrice;
   const peakPct   = ((peakPrice - entryPrice) / entryPrice) * 100;
@@ -203,6 +225,41 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
       `Entry: $${entryPrice} | Current: $${currentPrice} | Change: ${pricePct.toFixed(1)}%`
     );
     await closePosition({ userId, accountNumber, position: pos, exitReason, currentPrice });
+  }
+}
+
+// Cancel the existing stop order and place a new one at the updated trail level.
+async function updateTrailingStop({ userId, accountNumber, pos, newStop }) {
+  if (!pos.stopOrderId || !pos.stopPrice) return;
+  if (newStop <= pos.stopPrice) return; // only move stop UP, never down
+
+  try {
+    await cancelOrder(userId, accountNumber, pos.stopOrderId);
+  } catch { /* may already be filled/cancelled */ }
+
+  try {
+    const leg = {
+      'instrument-type': 'Equity Option',
+      symbol:             pos.optionSymbol,
+      quantity:           pos.quantity,
+      action:             'Sell to Close',
+    };
+    const placed = await placeOrder(userId, accountNumber, {
+      'order-type':    'Stop',
+      'time-in-force': 'Day',
+      'stop-trigger':   newStop.toFixed(2),
+      'price-effect':   'Credit',
+      legs:             [leg],
+    });
+    const newOrderId = placed?.id || placed?.['order-id'] || null;
+    if (newOrderId) {
+      await updatePosition(userId, pos.tradeId, { stopOrderId: newOrderId, stopPrice: newStop });
+      pos.stopOrderId = newOrderId;
+      pos.stopPrice   = newStop;
+      console.log(`[MONITOR] Trailing stop moved to $${newStop} (order ${newOrderId})`);
+    }
+  } catch (err) {
+    console.error('[MONITOR] Trail stop update failed:', err.message);
   }
 }
 

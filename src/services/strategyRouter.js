@@ -123,9 +123,9 @@ async function processForUser(user, strategy, signal, rawPayload) {
       peakPrice:     contract.mid,
       accountNumber,
       openedAt:      new Date().toISOString(),
-      stopPct:       signal.stopPct || settings.stop_loss_pct || 40,
-      // TP: prefer signal value, then user setting, then strategy default
-      tpPct:         signal.tpPct || settings.take_profit_pct || strategy.default_tp_pct || null,
+      stopPct:        signal.stopPct || settings.stop_loss_pct || 40,
+      tpPct:          signal.tpPct || settings.take_profit_pct || strategy.default_tp_pct || null,
+      exitStrategy:   settings.exit_strategy || 'oco',
     });
 
     // Log success

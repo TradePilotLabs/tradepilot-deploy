@@ -1,4 +1,4 @@
-const { placeOrder, cancelOrder, getOrder } = require('./tastyClient');
+const { placeOrder, cancelOrder, getOrder, placeComplexOrder } = require('./tastyClient');
 const { createTrade, closeTrade, cancelTrade, updateTradeEntryPrice } = require('../data/db');
 const { removePosition, updatePosition, incrDailyPnl } = require('../data/redis');
 
@@ -115,6 +115,13 @@ async function tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId, canc
     await updatePosition(userId, tradeId, { entryPrice: fillPrice, peakPrice: fillPrice })
       .catch(() => {});
     console.log(`[ORDER] Fill captured: trade ${tradeId} @ $${fillPrice}`);
+
+    // Place exit orders (OCO bracket or initial stop) now that we have the real fill price
+    const pos = await require('../data/redis').getPosition(userId, tradeId).catch(() => null);
+    if (pos) {
+      await placeExitOrders({ userId, accountNumber, position: { ...pos, entryPrice: fillPrice } })
+        .catch(err => console.error('[ORDER] Exit order placement failed:', err.message));
+    }
     return true;
   }
 
@@ -125,6 +132,93 @@ async function tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId, canc
     console.log(`[ORDER] Order ${tastyOrderId} unfilled — trade cancelled, daily slot freed`);
   }
   return false;
+}
+
+/**
+ * Place exit orders after a BTO fill is confirmed.
+ *
+ * OCO mode:  Place a TastyTrade complex OCO order immediately —
+ *   - Limit "Sell to Close" at take-profit price  (Credit)
+ *   - Stop  "Sell to Close" at stop-loss price     (Credit)
+ *   TastyTrade manages the exit; when one fires the other cancels.
+ *
+ * Trailing mode: Place an initial Stop order at the stop-loss price.
+ *   The position monitor cancels/replaces it as the peak price rises.
+ */
+async function placeExitOrders({ userId, accountNumber, position }) {
+  const { getOrCreateSettings, updateComplexOrderId } = require('../data/db');
+  const settings = await getOrCreateSettings(userId);
+
+  const exitStrategy = settings.exit_strategy || 'oco';
+  const entryPrice   = parseFloat(position.entryPrice);
+  const qty          = position.quantity;
+  const sym          = position.optionSymbol;
+
+  if (!entryPrice || entryPrice <= 0) return;
+
+  const stopPct = position.stopPct || settings.stop_loss_pct || 40;
+  const tpPct   = position.tpPct   || settings.take_profit_pct || 60;
+
+  const stopPrice = parseFloat((entryPrice * (1 - Math.abs(stopPct) / 100)).toFixed(2));
+  const tpPrice   = parseFloat((entryPrice * (1 + Math.abs(tpPct)   / 100)).toFixed(2));
+
+  const leg = {
+    'instrument-type': 'Equity Option',
+    symbol:             sym,
+    quantity:           qty,
+    action:             'Sell to Close',
+  };
+
+  if (exitStrategy === 'oco') {
+    // ── OCO bracket: TP Limit + SL Stop ───────────────────────
+    try {
+      const result = await placeComplexOrder(userId, accountNumber, {
+        type:   'OCO',
+        orders: [
+          {
+            'order-type':    'Limit',
+            'time-in-force': 'Day',
+            'price':          tpPrice.toFixed(2),
+            'price-effect':   'Credit',
+            legs:             [leg],
+          },
+          {
+            'order-type':    'Stop',
+            'time-in-force': 'Day',
+            'stop-trigger':   stopPrice.toFixed(2),
+            'price-effect':   'Credit',
+            legs:             [leg],
+          },
+        ],
+      });
+      const complexId = result?.['id'] || result?.['complex-order-id'] || null;
+      if (complexId) {
+        await updatePosition(userId, position.tradeId, { complexOrderId: complexId, tpPrice, stopPrice });
+        if (updateComplexOrderId) await updateComplexOrderId(position.tradeId, complexId);
+        console.log(`[ORDER] OCO bracket placed: complex=${complexId} TP=$${tpPrice} SL=$${stopPrice}`);
+      }
+    } catch (err) {
+      console.error('[ORDER] OCO placement failed:', err.message);
+    }
+  } else {
+    // ── Trailing: place initial stop order ────────────────────
+    try {
+      const placed = await placeOrder(userId, accountNumber, {
+        'order-type':    'Stop',
+        'time-in-force': 'Day',
+        'stop-trigger':   stopPrice.toFixed(2),
+        'price-effect':   'Credit',
+        legs:             [leg],
+      });
+      const stopOrderId = placed?.id || placed?.['order-id'] || null;
+      if (stopOrderId) {
+        await updatePosition(userId, position.tradeId, { stopOrderId, stopPrice });
+        console.log(`[ORDER] Initial stop placed: order=${stopOrderId} SL=$${stopPrice}`);
+      }
+    } catch (err) {
+      console.error('[ORDER] Initial stop placement failed:', err.message);
+    }
+  }
 }
 
 /**
