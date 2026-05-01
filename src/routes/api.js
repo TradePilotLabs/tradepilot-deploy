@@ -96,9 +96,13 @@ router.get('/stats', async (req, res) => {
       getTodayRealizedPnl(userId),
       getDailyPnlHistory(userId, 30),
       isTastyConnected(userId),
+      // Use ET date so the trading day matches market hours (not UTC midnight)
       pool.query(
         `SELECT * FROM trades
-         WHERE user_id=$1 AND entry_time >= CURRENT_DATE
+         WHERE user_id=$1
+           AND (entry_time AT TIME ZONE 'America/New_York')::date
+                 = (NOW() AT TIME ZONE 'America/New_York')::date
+           AND status IN ('open','closed')
          ORDER BY entry_time DESC`,
         [userId]
       ),
@@ -107,8 +111,8 @@ router.get('/stats', async (req, res) => {
     const totalWins   = pnlHistory.reduce((s, d) => s + (d.win_count   || 0), 0);
     const totalPnl    = pnlHistory.reduce((s, d) => s + parseFloat(d.total_pnl || 0), 0);
 
-    const todayTrades    = todayResult.rows.filter(t => t.status !== 'cancelled');
-    const closedToday    = todayTrades.filter(t => t.status === 'closed');
+    const todayTrades    = todayResult.rows.filter(t => t.status !== 'cancelled'); // all real attempts today
+    const closedToday    = todayTrades.filter(t => t.status === 'closed' && t.exit_price != null);
     const todayWins      = closedToday.filter(t => parseFloat(t.pnl || 0) > 0).length;
     const todayLosses    = closedToday.filter(t => parseFloat(t.pnl || 0) <= 0).length;
     const todayGrossPnl  = closedToday.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);

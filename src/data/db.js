@@ -202,7 +202,7 @@ async function getOpenTrades(userId) {
 
 async function getTradeHistory(userId, limit = 50, offset = 0) {
   const { rows } = await getPool().query(
-    `SELECT * FROM trades WHERE user_id = $1 AND status != 'cancelled'
+    `SELECT * FROM trades WHERE user_id = $1 AND status IN ('open','closed')
      ORDER BY entry_time DESC LIMIT $2 OFFSET $3`,
     [userId, limit, offset]
   );
@@ -210,12 +210,14 @@ async function getTradeHistory(userId, limit = 50, offset = 0) {
 }
 
 async function getTodayTradeCount(userId) {
+  // Use Eastern Time date so the trading day boundary matches market hours
   const { rows } = await getPool().query(
     `SELECT COUNT(*) as count FROM trades
-     WHERE user_id    = $1
-       AND entry_time >= CURRENT_DATE
-       AND entry_time <  CURRENT_DATE + INTERVAL '1 day'
-       AND status    != 'cancelled'`,
+     WHERE user_id   = $1
+       AND (entry_time AT TIME ZONE 'America/New_York')::date
+             = (NOW() AT TIME ZONE 'America/New_York')::date
+       AND status    != 'cancelled'
+       AND entry_price IS NOT NULL`,
     [userId]
   );
   return parseInt(rows[0].count, 10);
@@ -226,7 +228,8 @@ async function getTodayRealizedPnl(userId) {
     `SELECT COALESCE(SUM(pnl), 0) as total FROM trades
      WHERE user_id = $1
        AND status   = 'closed'
-       AND exit_time >= CURRENT_DATE`,
+       AND (exit_time AT TIME ZONE 'America/New_York')::date
+             = (NOW() AT TIME ZONE 'America/New_York')::date`,
     [userId]
   );
   return parseFloat(rows[0].total);
