@@ -11,7 +11,7 @@ let   monitorInterval  = null;
 
 function startPositionMonitor() {
   if (monitorInterval) return;
-  console.log('✓ Position monitor started (8s interval)');
+  console.log(`✓ Position monitor started (${POLL_INTERVAL_MS/1000}s interval, DXFeed streaming)`);
   monitorInterval = setInterval(runMonitorCycle, POLL_INTERVAL_MS);
 }
 
