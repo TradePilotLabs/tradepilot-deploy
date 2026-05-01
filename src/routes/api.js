@@ -69,6 +69,40 @@ router.delete('/presets/:id', async (req, res) => {
 
 // ─── Positions & trades ───────────────────────────────────────
 
+/**
+ * GET /api/positions/stream  — Server-Sent Events price stream
+ *
+ * The browser connects once; the server pushes a price event every time
+ * DXFeed fires a Quote update for any of the user's open positions.
+ * Format: data: {"symbol":"SPY   260501C00724000","price":1.32}\n\n
+ */
+router.get('/positions/stream', async (req, res) => {
+  const userId = req.user.id;
+  const { priceHub } = require('../services/dxFeedClient');
+
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+
+  // Send a heartbeat every 25s to keep the connection alive through proxies
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n');
+  }, 25000);
+
+  // Forward DXFeed price ticks for this user to the SSE stream
+  function onPrice(occSymbol, price) {
+    res.write(`data: ${JSON.stringify({ symbol: occSymbol, price })}\n\n`);
+  }
+
+  priceHub.on(userId, onPrice);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    priceHub.off(userId, onPrice);
+  });
+});
+
 router.get('/positions', async (req, res) => {
   try {
     const positions = await getOpenPositionsForUser(req.user.id);

@@ -9,7 +9,15 @@
  * to Quote events for each open option symbol.
  */
 
-const WebSocket = require('ws');
+const WebSocket    = require('ws');
+const EventEmitter = require('events');
+
+/**
+ * priceHub — emits price ticks from DXFeed to any subscribers.
+ * The SSE endpoint in api.js listens here and pushes to the browser.
+ */
+const priceHub = new EventEmitter();
+priceHub.setMaxListeners(200); // many simultaneous browser tabs
 
 // OCC "SPY   260501C00724000" → DXFeed ".SPY260501C724"
 function occToDxFeed(occSym) {
@@ -101,7 +109,13 @@ class DXFeedUserClient {
               const bid = parseFloat(ev.bidPrice || 0);
               const ask = parseFloat(ev.askPrice || 0);
               if (bid > 0 || ask > 0) {
-                this.prices[ev.eventSymbol] = bid && ask ? (bid + ask) / 2 : (bid || ask);
+                const mid = bid && ask ? (bid + ask) / 2 : (bid || ask);
+                this.prices[ev.eventSymbol] = mid;
+                // Notify SSE broadcast hub on every price tick.
+                // Emit per-user so each user's SSE stream only sees their positions.
+                // Pass the OCC symbol so the frontend can match it to position data.
+                const occSym = this._dxToOcc(ev.eventSymbol);
+                if (occSym) priceHub.emit(this.userId, occSym, mid);
               }
             }
           }
@@ -126,6 +140,16 @@ class DXFeedUserClient {
       type: 'FEED_SUBSCRIPTION', channel: 1,
       add: [...this.subs].map(s => ({ type: 'Quote', symbol: s })),
     });
+  }
+
+  // ".SPY260501C724" → "SPY   260501C00724000"
+  _dxToOcc(dxSym) {
+    if (!dxSym) return null;
+    const m = dxSym.match(/^\.([A-Z]+)(\d{6})([CP])(\d+(?:\.\d+)?)$/i);
+    if (!m) return null;
+    const [, root, date, type, strikeStr] = m;
+    const strike = Math.round(parseFloat(strikeStr) * 1000);
+    return `${root.padEnd(6, ' ')}${date}${type.toUpperCase()}${String(strike).padStart(8, '0')}`;
   }
 
   subscribe(occSymbol) {
@@ -178,4 +202,4 @@ function removeClient(userId) {
   if (c) { c.stop(); clients.delete(userId); }
 }
 
-module.exports = { getClient, removeClient, occToDxFeed };
+module.exports = { getClient, removeClient, occToDxFeed, priceHub };

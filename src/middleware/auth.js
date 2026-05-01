@@ -1,13 +1,22 @@
 const jwt = require('jsonwebtoken');
 const { getUserById } = require('../data/db');
 
-// Verifies the JWT on protected dashboard API routes
+// Verifies the JWT on protected dashboard API routes.
+// Also accepts ?token= query param for SSE endpoints (EventSource
+// doesn't support custom headers, so the token is passed in the URL).
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
+  const queryToken = req.query.token;
+
+  let rawToken;
+  if (header?.startsWith('Bearer ')) {
+    rawToken = header.slice(7);
+  } else if (queryToken) {
+    rawToken = queryToken;
+  } else {
     return res.status(401).json({ error: 'Missing token' });
   }
-  const token = header.slice(7);
+  const token = rawToken;
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await getUserById(payload.sub);
