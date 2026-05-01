@@ -18,6 +18,9 @@ async function processStrategySignal(strategy, rawPayload) {
     return { error: 'invalid_signal' };
   }
 
+  // Always stamp the strategy name so trades display the strategy, not 'CUSTOM'
+  signal.signalType = strategy.name;
+
   console.log(`[STRATEGY] ${strategy.name} fired: ${signal.action} ${signal.ticker}`);
 
   // Get all users subscribed to this strategy with trading enabled
