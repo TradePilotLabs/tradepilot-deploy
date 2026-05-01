@@ -1,6 +1,6 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
 const { getPositions, getOrder, placeOrder, cancelOrder } = require('./tastyClient');
-const { getOptionAskByOcc }                  = require('./polygonClient');
+const { getClient: getDxFeedClient }         = require('./dxFeedClient');
 const { closePosition }                      = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
 const { getOrCreateSettings, getTastyTokens,
@@ -49,45 +49,48 @@ async function checkUserPositions(userId, positions) {
   if (!tokens?.account_number) return;
   const accountNumber = tokens.account_number;
 
-  // ── 1. Live prices from Polygon + reconciliation from TastyTrade ──
-  //
-  // Pricing: Polygon minute-bar close is the most up-to-date REST option
-  // price available. TastyTrade's REST positions endpoint returns a stale
-  // snapshot that doesn't update intra-minute.
-  //
-  // Reconciliation: TastyTrade positions tell us which symbols are still
-  // held at the broker — used to detect manual closes.
-
+  // ── 1. Real-time prices via TastyTrade DXFeed WebSocket ──────
+  // DXFeed streams Quote events (bid/ask) for each subscribed symbol.
+  // Mid = (bid + ask) / 2. Updates are near-instantaneous from the exchange.
   const priceMap    = {};
   let brokerSymbols = new Set();
 
-  // Fetch live prices from Polygon for each position (parallel)
-  await Promise.all(positions.map(async pos => {
-    try {
-      const price = await getOptionAskByOcc(pos.optionSymbol);
+  // Get (or start) the DXFeed streaming client for this user
+  let dxClient = null;
+  try {
+    dxClient = await getDxFeedClient(userId);
+    // Ensure all open positions are subscribed
+    for (const pos of positions) {
+      dxClient.subscribe(pos.optionSymbol);
+    }
+    // Read latest prices from the streaming client
+    for (const pos of positions) {
+      const price = dxClient.getPrice(pos.optionSymbol);
       if (price && price > 0) priceMap[pos.optionSymbol] = price;
-    } catch { /* non-fatal */ }
-  }));
+    }
+  } catch (err) {
+    console.error(`[MONITOR] DXFeed unavailable for ${userId}: ${err.message}`);
+  }
 
-  // Fetch broker positions for reconciliation only
+  // Fetch broker positions for reconciliation (which symbols still exist at TT)
   let brokerPositions = [];
+  let brokerFetched   = false;
   try {
     brokerPositions = await getPositions(userId, accountNumber);
     brokerSymbols   = new Set(brokerPositions.map(p => p['symbol']));
+    brokerFetched   = true;
 
-    // If Polygon had no data for a symbol, try TastyTrade mark as fallback
+    // Use TastyTrade mark as fallback when DXFeed hasn't received a price yet
     for (const bp of brokerPositions) {
       const sym  = bp['symbol'];
       const mark = parseFloat(bp['mark'] || bp['mark-price'] || bp['close-price'] || 0);
-      if (sym && mark > 0 && !priceMap[sym]) {
-        priceMap[sym] = mark;
-      }
+      if (sym && mark > 0 && !priceMap[sym]) priceMap[sym] = mark;
     }
   } catch (err) {
     console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);
   }
 
-  // Write current price to Redis so the dashboard always shows the latest
+  // Write current price to Redis immediately so dashboard reflects latest quote
   for (const pos of positions) {
     const price = priceMap[pos.optionSymbol];
     if (price && price !== pos.currentPrice) {
@@ -115,8 +118,11 @@ async function checkUserPositions(userId, positions) {
   }
 
   // ── 3. Reconcile: detect positions closed outside TradePilot ─
+  // Run whenever we successfully fetched broker state — even if 0 positions.
+  // This catches OCO/stop-loss fills that close the position at TastyTrade
+  // without going through our close flow.
 
-  if (brokerSymbols.size > 0) {
+  if (brokerFetched) {
     for (const pos of positions) {
       if (!brokerSymbols.has(pos.optionSymbol)) {
         const lastPrice = priceMap[pos.optionSymbol] ?? pos.entryPrice ?? 0;
