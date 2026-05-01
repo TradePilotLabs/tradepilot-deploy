@@ -207,11 +207,25 @@ async function checkExitConditions({ userId, accountNumber, pos, currentPrice, s
 // Close a position in TradePilot records without placing a broker order.
 // Used when we know the broker position is already gone (expired, manual close).
 async function closeLocalPosition({ userId, position, exitReason, exitPrice }) {
-  const { closeTrade } = require('../data/db');
+  const { closeTrade, updateTradeEntryPrice } = require('../data/db');
   const { removePosition, incrDailyPnl } = require('../data/redis');
-  const { calcPnl } = require('./orderPlacer');
+  const { calcPnl, tryCaptureFill } = require('./orderPlacer');
 
-  const pnl = position.entryPrice ? calcPnl(position.entryPrice, exitPrice ?? 0, position.quantity) : 0;
+  // Try to backfill entry price from TastyTrade order fill if missing
+  let entryPrice = position.entryPrice;
+  if (!entryPrice && position.tastyOrderId && position.accountNumber) {
+    try {
+      const order = await require('./tastyClient').getOrder(userId, position.accountNumber, position.tastyOrderId);
+      const fill  = parseFloat(order?.['avg-fill-price'] || 0);
+      if (fill > 0) {
+        await updateTradeEntryPrice(position.tradeId, fill);
+        entryPrice = fill;
+        console.log(`[MONITOR] Entry price recovered at close: $${fill}`);
+      }
+    } catch {}
+  }
+
+  const pnl = entryPrice ? calcPnl(entryPrice, exitPrice ?? 0, position.quantity) : 0;
   await closeTrade(position.tradeId, { exitPrice: exitPrice ?? 0, exitReason, pnl });
   await removePosition(userId, position.tradeId);
   await incrDailyPnl(userId, pnl);

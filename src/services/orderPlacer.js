@@ -69,10 +69,9 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
 
   console.log(`[ORDER] Trade created: ${trade.id} | TastyOrder: ${tastyOrderId}`);
 
-  // For limit orders: background fill-timeout check.
-  // If the order isn't filled within order_fill_timeout minutes, cancel it
-  // so it doesn't count toward the user's daily trade limit.
-  if (orderType === 'Limit' && tastyOrderId) {
+  // Background: check fill status quickly (30s) then again at fill timeout.
+  // Captures actual fill price and cancels unfilled orders within the limit.
+  if (tastyOrderId) {
     const timeoutMin = settings.order_fill_timeout ?? 3;
     watchOrderFill({ userId, accountNumber, tastyOrderId, tradeId: trade.id, timeoutMin })
       .catch(err => console.error('[ORDER] Fill watch error:', err.message));
@@ -87,37 +86,44 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
  * so it doesn't count toward the user's daily trade limit.
  */
 async function watchOrderFill({ userId, accountNumber, tastyOrderId, tradeId, timeoutMin }) {
-  await new Promise(r => setTimeout(r, timeoutMin * 60 * 1000));
+  // Quick check at 30s — captures fill price for most orders before any manual action
+  await new Promise(r => setTimeout(r, 30_000));
+  const quickFill = await tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId);
+  if (quickFill) return;
 
+  // Full timeout check
+  await new Promise(r => setTimeout(r, (timeoutMin * 60 - 30) * 1000));
+
+  await tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId, true /* cancel if unfilled */);
+}
+
+/**
+ * Check order fill status. Returns true if filled (entry price updated).
+ * If cancelIfUnfilled=true and order isn't filled, cancels and voids the trade.
+ */
+async function tryCaptureFill(userId, accountNumber, tastyOrderId, tradeId, cancelIfUnfilled = false) {
   let order;
-  try {
-    order = await getOrder(userId, accountNumber, tastyOrderId);
-  } catch {
-    return; // Can't check — leave trade as-is
+  try { order = await getOrder(userId, accountNumber, tastyOrderId); }
+  catch { return false; }
+
+  const status    = (order?.status || '').toLowerCase();
+  const fillPrice = parseFloat(order?.['avg-fill-price'] || 0);
+
+  if (status === 'filled' && fillPrice > 0) {
+    await updateTradeEntryPrice(tradeId, fillPrice);
+    await updatePosition(userId, tradeId, { entryPrice: fillPrice, peakPrice: fillPrice })
+      .catch(() => {});
+    console.log(`[ORDER] Fill captured: trade ${tradeId} @ $${fillPrice}`);
+    return true;
   }
 
-  const status = (order?.status || '').toLowerCase();
-
-  if (status === 'filled') {
-    // Backfill the entry price from the actual fill
-    const fillPrice = parseFloat(order?.['avg-fill-price'] || 0);
-    if (fillPrice > 0) {
-      await updateTradeEntryPrice(tradeId, fillPrice);
-      await updatePosition(userId, tradeId, { entryPrice: fillPrice, peakPrice: fillPrice })
-        .catch(() => {}); // position may already be gone
-      console.log(`[ORDER] Fill confirmed: trade ${tradeId} @ $${fillPrice}`);
-    }
-    return;
+  if (cancelIfUnfilled && status !== 'filled') {
+    try { await cancelOrder(userId, accountNumber, tastyOrderId); } catch {}
+    await cancelTrade(tradeId);
+    await removePosition(userId, tradeId).catch(() => {});
+    console.log(`[ORDER] Order ${tastyOrderId} unfilled — trade cancelled, daily slot freed`);
   }
-
-  // Order not filled — cancel it and free up the daily trade slot
-  try {
-    await cancelOrder(userId, accountNumber, tastyOrderId);
-  } catch { /* may already be cancelled or expired */ }
-
-  await cancelTrade(tradeId);
-  await removePosition(userId, tradeId).catch(() => {});
-  console.log(`[ORDER] Limit order ${tastyOrderId} unfilled after ${timeoutMin}min — cancelled, daily slot freed`);
+  return false;
 }
 
 /**

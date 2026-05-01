@@ -21,8 +21,7 @@ async function run() {
 
   for (const { tradeId, orderId } of TRADES) {
     try {
-      const order     = await getOrder(USER_ID, accountNumber, orderId);
-      console.log(`Order ${orderId} raw:`, JSON.stringify(order, null, 2).slice(0, 500));
+      const order = await getOrder(USER_ID, accountNumber, orderId);
       const status    = order?.status || 'unknown';
       const fillPrice = parseFloat(order?.['avg-fill-price'] || order?.price || 0);
       console.log(`Order ${orderId}: status=${status} fill=$${fillPrice}`);
