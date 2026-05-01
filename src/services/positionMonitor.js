@@ -1,11 +1,12 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
 const { getPositions, getOrder, placeOrder, cancelOrder } = require('./tastyClient');
-const { closePosition }                       = require('./orderPlacer');
+const { getOptionAskByOcc }                  = require('./polygonClient');
+const { closePosition }                      = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
 const { getOrCreateSettings, getTastyTokens,
         getTodayRealizedPnl, updateTradeEntryPrice } = require('../data/db');
 
-const POLL_INTERVAL_MS = 8000;
+const POLL_INTERVAL_MS = 5000;
 let   monitorInterval  = null;
 
 function startPositionMonitor() {
@@ -48,33 +49,50 @@ async function checkUserPositions(userId, positions) {
   if (!tokens?.account_number) return;
   const accountNumber = tokens.account_number;
 
-  // ── 1. Fetch broker positions — live pricing + reconciliation ──
-  // TastyTrade's /market-data/quotes REST endpoint is 404.
-  // The positions endpoint returns mark-price (real-time mid from the
-  // exchange), which is the same price TastyTrade uses for its own fills —
-  // more accurate than Polygon agg bars for monitoring SL/TP.
+  // ── 1. Live prices from Polygon + reconciliation from TastyTrade ──
+  //
+  // Pricing: Polygon minute-bar close is the most up-to-date REST option
+  // price available. TastyTrade's REST positions endpoint returns a stale
+  // snapshot that doesn't update intra-minute.
+  //
+  // Reconciliation: TastyTrade positions tell us which symbols are still
+  // held at the broker — used to detect manual closes.
+
+  const priceMap    = {};
+  let brokerSymbols = new Set();
+
+  // Fetch live prices from Polygon for each position (parallel)
+  await Promise.all(positions.map(async pos => {
+    try {
+      const price = await getOptionAskByOcc(pos.optionSymbol);
+      if (price && price > 0) priceMap[pos.optionSymbol] = price;
+    } catch { /* non-fatal */ }
+  }));
+
+  // Fetch broker positions for reconciliation only
   let brokerPositions = [];
-  let brokerSymbols   = new Set();
-  const priceMap      = {};
   try {
     brokerPositions = await getPositions(userId, accountNumber);
+    brokerSymbols   = new Set(brokerPositions.map(p => p['symbol']));
+
+    // If Polygon had no data for a symbol, try TastyTrade mark as fallback
     for (const bp of brokerPositions) {
       const sym  = bp['symbol'];
-      const mark = parseFloat(bp['mark-price'] || bp['mark'] || bp['close-price'] || 0);
-      if (sym && mark > 0) priceMap[sym] = mark;
+      const mark = parseFloat(bp['mark'] || bp['mark-price'] || bp['close-price'] || 0);
+      if (sym && mark > 0 && !priceMap[sym]) {
+        priceMap[sym] = mark;
+      }
     }
-    brokerSymbols = new Set(brokerPositions.map(p => p['symbol']));
   } catch (err) {
     console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);
   }
 
-  // ── 1b. Write current mark price to Redis for every position ──
-  // This lets the dashboard show live price (up AND down), not just peak.
+  // Write current price to Redis so the dashboard always shows the latest
   for (const pos of positions) {
-    const mark = priceMap[pos.optionSymbol];
-    if (mark && mark !== pos.currentPrice) {
-      await updatePosition(userId, pos.tradeId, { currentPrice: mark });
-      pos.currentPrice = mark;
+    const price = priceMap[pos.optionSymbol];
+    if (price && price !== pos.currentPrice) {
+      await updatePosition(userId, pos.tradeId, { currentPrice: price });
+      pos.currentPrice = price;
     }
   }
 
