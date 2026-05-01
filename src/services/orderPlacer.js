@@ -57,14 +57,17 @@ async function openPosition({ userId, accountNumber, contract, quantity, signal,
   // Save to DB — entry_price filled later once order confirms
   const trade = await createTrade({
     userId,
-    symbol:       signal.ticker,
-    optionSymbol: contract.symbol,
-    direction:    signal.direction,
-    signalType:   signal.signalType,
+    symbol:        signal.ticker,
+    optionSymbol:  contract.symbol,
+    direction:     signal.direction,
+    signalType:    signal.signalType,
     quantity,
-    entryPrice:   contract.mid,
+    entryPrice:    contract.mid,
     tastyOrderId,
-    rawSignal:    signal.raw,
+    rawSignal:     signal.raw,
+    stopPct:       settings.stop_loss_pct     ?? null,
+    tpPct:         settings.take_profit_pct   ?? null,
+    exitStrategy:  settings.exit_strategy     ?? null,
   });
 
   console.log(`[ORDER] Trade created: ${trade.id} | TastyOrder: ${tastyOrderId}`);

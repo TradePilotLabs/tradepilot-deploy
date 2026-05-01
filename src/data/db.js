@@ -152,12 +152,14 @@ async function createTrade(data) {
   const { rows } = await getPool().query(
     `INSERT INTO trades
        (user_id, symbol, option_symbol, direction, signal_type,
-        quantity, entry_price, entry_time, status, tasty_order_id, raw_signal)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),'open',$8,$9)
+        quantity, entry_price, entry_time, status, tasty_order_id,
+        raw_signal, stop_pct, tp_pct, exit_strategy)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),'open',$8,$9,$10,$11,$12)
      RETURNING *`,
     [data.userId, data.symbol, data.optionSymbol, data.direction,
      data.signalType, data.quantity, data.entryPrice,
-     data.tastyOrderId, JSON.stringify(data.rawSignal)]
+     data.tastyOrderId, JSON.stringify(data.rawSignal),
+     data.stopPct ?? null, data.tpPct ?? null, data.exitStrategy ?? null]
   );
   return rows[0];
 }
