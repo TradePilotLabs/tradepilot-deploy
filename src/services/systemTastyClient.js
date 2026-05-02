@@ -143,6 +143,41 @@ async function getOptionAsk(tvSymbol) {
   return ask > 0 ? ask : null;
 }
 
+// ─── ATM 0DTE option ask ──────────────────────────────────────
+// Used when a signal has ticker + direction but no option symbol.
+// Finds today's expiration, picks the strike closest to stockPrice,
+// and returns the ask for the call or put.
+async function getAtmOptionAsk(ticker, direction, stockPrice) {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const data  = await systemGet(`/option-chains/${ticker}/nested`);
+    const expirations = data?.data?.items || [];
+
+    const todayExp = expirations.find(e => e['expiration-date'] === today);
+    if (!todayExp?.strikes?.length) return null;
+
+    const strikes = todayExp.strikes;
+    const atm = stockPrice
+      ? strikes.reduce((best, s) => {
+          const d  = Math.abs(parseFloat(s['strike-price']) - stockPrice);
+          const bd = Math.abs(parseFloat(best['strike-price']) - stockPrice);
+          return d < bd ? s : best;
+        })
+      : strikes[Math.floor(strikes.length / 2)];
+
+    const occSym = direction === 'call' ? atm.call : atm.put;
+    if (!occSym) return null;
+
+    const quoteData = await systemGet(`/market-data/quotes?symbols[]=${encodeURIComponent(occSym)}`);
+    const q   = quoteData?.data?.items?.[0];
+    const ask = parseFloat(q?.ask ?? q?.['ask-price'] ?? 0);
+    return ask > 0 ? ask : null;
+  } catch (err) {
+    console.warn(`[SYSTEM TASTY] ATM ask lookup failed for ${ticker} ${direction}:`, err.message);
+    return null;
+  }
+}
+
 // ─── Health check ─────────────────────────────────────────────
 
 async function checkConnection() {
@@ -189,4 +224,4 @@ async function checkConnection() {
   }
 }
 
-module.exports = { getOptionAsk, checkConnection, toOCCSymbol };
+module.exports = { getOptionAsk, getAtmOptionAsk, checkConnection, toOCCSymbol };

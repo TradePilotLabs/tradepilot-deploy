@@ -5,15 +5,32 @@ const { processStrategySignal } = require('../services/strategyRouter');
 const polygon   = require('../services/polygonClient');
 const tastySystem = require('../services/systemTastyClient');
 
-async function fetchOptionAsk(tvSymbol) {
-  if (!tvSymbol) return null;
-  // Polygon is primary — simpler auth, no rotating tokens
-  if (process.env.POLYGON_API_KEY) {
-    const ask = await polygon.getOptionAsk(tvSymbol).catch(() => null);
+// Cascade: option symbol → suggested option → ATM lookup
+async function fetchOptionAsk({ optionSymbol, suggestedOption, ticker, direction, stockPrice }) {
+  // 1. Known option symbol in payload (TradingView format or OCC)
+  if (optionSymbol) {
+    if (process.env.POLYGON_API_KEY) {
+      const ask = await polygon.getOptionAsk(optionSymbol).catch(() => null);
+      if (ask) return ask;
+    }
+    const ask = await tastySystem.getOptionAsk(optionSymbol).catch(() => null);
     if (ask) return ask;
   }
-  // Fall back to TastyTrade system client
-  return tastySystem.getOptionAsk(tvSymbol).catch(() => null);
+
+  // 2. suggestedOption string (e.g. "SPY 5/1 724c") — convert to Polygon symbol
+  if (suggestedOption && process.env.POLYGON_API_KEY) {
+    const polygonSym = polygon.suggestedToPolygon(suggestedOption, new Date());
+    const ask = await polygon.getOptionAskByPolygonSym(polygonSym).catch(() => null);
+    if (ask) return ask;
+  }
+
+  // 3. Only ticker + direction — find ATM 0DTE via system TastyTrade chain
+  if (ticker && direction) {
+    const ask = await tastySystem.getAtmOptionAsk(ticker, direction, stockPrice).catch(() => null);
+    if (ask) return ask;
+  }
+
+  return null;
 }
 
 function extractSignalMeta(slug, body) {
@@ -87,15 +104,11 @@ router.post('/:slug', async (req, res) => {
     const signalTime = req.body.timestamp || new Date().toISOString();
 
     const logWithAsk = async () => {
-      // Use ask from payload if sent; otherwise fetch from system TastyTrade client
-      let optionAsk = meta.optionAsk;
-      if (!optionAsk && meta.optionSymbol) {
-        optionAsk = await fetchOptionAsk(meta.optionSymbol);
-      }
+      let optionAsk = meta.optionAsk || await fetchOptionAsk(meta);
       if (optionAsk) {
-        console.log(`[SIGNAL LOG] ${meta.optionSymbol} ask=$${optionAsk}`);
+        console.log(`[SIGNAL LOG] ${meta.optionSymbol || meta.suggestedOption || meta.ticker} ask=$${optionAsk}`);
       } else {
-        console.warn(`[SIGNAL LOG] ${meta.optionSymbol} — option ask unavailable, storing signal without price`);
+        console.warn(`[SIGNAL LOG] ${meta.ticker} ${meta.direction} — option ask unavailable`);
       }
       await logWebhookSignal({ ...meta, optionAsk });
     };
