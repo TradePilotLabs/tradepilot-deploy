@@ -115,8 +115,23 @@ async function getOptionMinuteBars(polygonSym, fromMs, toMs) {
 
 // ─── Bars for a signal (used by backtest engine at run time) ─────────────────
 
+// Parse "SPY 5/1 724c" or "QQQ 4/30 657p" → Polygon symbol using signal year
+function suggestedToPolygon(suggested, signalTime) {
+  if (!suggested || !signalTime) return null;
+  const m = suggested.trim().match(/^([A-Z]+)\s+(\d{1,2})\/(\d{1,2})\s+(\d+(?:\.\d+)?)(c|p)$/i);
+  if (!m) return null;
+  const [, root, month, day, strikeStr, type] = m;
+  const year   = new Date(signalTime).getUTCFullYear();
+  const yy     = String(year).slice(2);
+  const mm     = String(month).padStart(2, '0');
+  const dd     = String(day).padStart(2, '0');
+  const strike = Math.round(parseFloat(strikeStr) * 1000);
+  return `O:${root}${yy}${mm}${dd}${type.toUpperCase()}${String(strike).padStart(8, '0')}`;
+}
+
 async function getBarsForSignal(signal) {
-  const sym = toPolygonSymbol(signal.option_symbol);
+  const sym = toPolygonSymbol(signal.option_symbol)
+           || suggestedToPolygon(signal.suggested_option, signal.signal_time);
   if (!sym || !signal.signal_time) return [];
   const entryMs      = new Date(signal.signal_time).getTime();
   const d            = new Date(signal.signal_time);

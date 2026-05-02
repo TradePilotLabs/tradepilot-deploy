@@ -314,15 +314,18 @@ function runBacktest(signals, settings) {
       skippedSignals.push({ ...sig, skipReason: 'max_trades' }); continue;
     }
 
-    // Skip signals with no entry price (webhook_signal_log uses option_ask)
-    const rawAsk = parseFloat(sig.option_ask ?? sig.ask_price);
-    if (!rawAsk || isNaN(rawAsk) || rawAsk <= 0) {
-      skippedSignals.push({ ...sig, skipReason: 'missing_ask' }); continue;
-    }
-
     // Skip signals with no Polygon bars — can't simulate TP/SL without price path
     if (!sig._bars || !sig._bars.length) {
       skippedSignals.push({ ...sig, skipReason: 'no_price_data' }); continue;
+    }
+
+    // Use stored ask if available; otherwise use the open of the first bar at/after signal time
+    const storedAsk = parseFloat(sig.option_ask ?? sig.ask_price);
+    const signalMs  = new Date(sig.signal_time).getTime();
+    const entryBar  = sig._bars.find(b => b.t >= signalMs) ?? sig._bars[0];
+    const rawAsk    = (storedAsk > 0 && !isNaN(storedAsk)) ? storedAsk : entryBar?.o;
+    if (!rawAsk || isNaN(rawAsk) || rawAsk <= 0) {
+      skippedSignals.push({ ...sig, skipReason: 'missing_ask' }); continue;
     }
     const entryPrice = parseFloat((rawAsk * (1 + slippage / 100)).toFixed(4));
 

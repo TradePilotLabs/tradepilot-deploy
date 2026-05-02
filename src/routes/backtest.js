@@ -47,7 +47,7 @@ router.post('/run', async (req, res) => {
     // simulate when TP or SL was hit. Runs sequentially with a small delay
     // to avoid hitting Polygon rate limits on lower-tier plans.
     for (const sig of signals) {
-      if (sig.option_symbol) {
+      if (sig.option_symbol || sig.suggested_option) {
         sig._bars = await getBarsForSignal(sig).catch(() => []);
         await new Promise(r => setTimeout(r, 150));
       }
