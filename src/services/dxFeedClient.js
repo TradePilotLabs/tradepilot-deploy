@@ -40,6 +40,9 @@ class DXFeedUserClient {
     this.token     = null;
     this.wsUrl     = null;
     this._closing  = false;
+    // Field index map per event type, populated from FEED_CONFIG (compact format).
+    // e.g. { Quote: { eventSymbol: 1, bidPrice: 2, askPrice: 3 } }
+    this.schema    = {};
   }
 
   async start() {
@@ -102,21 +105,48 @@ class DXFeedUserClient {
         if (this.subs.size > 0) this._resubscribeAll();
         break;
 
+      case 'FEED_CONFIG':
+        // Build a { fieldName → arrayIndex } map for each event type so we can
+        // decode the compact array format used in FEED_DATA.
+        // Server sends: { acceptEventFields: { Quote: ["eventSymbol","bidPrice","askPrice",...] } }
+        if (msg.acceptEventFields) {
+          for (const [evType, fields] of Object.entries(msg.acceptEventFields)) {
+            const idx = {};
+            fields.forEach((f, i) => { idx[f] = i; });
+            this.schema[evType] = idx;
+          }
+          console.log(`[DXFEED] Schema for user ${this.userId}:`, JSON.stringify(this.schema));
+        }
+        break;
+
       case 'FEED_DATA':
         if (msg.channel === 1 && Array.isArray(msg.data)) {
           for (const ev of msg.data) {
-            if (ev.eventType === 'Quote') {
-              const bid = parseFloat(ev.bidPrice || 0);
-              const ask = parseFloat(ev.askPrice || 0);
-              if (bid > 0 || ask > 0) {
-                const mid = bid && ask ? (bid + ask) / 2 : (bid || ask);
-                this.prices[ev.eventSymbol] = mid;
-                // Notify SSE broadcast hub on every price tick.
-                // Emit per-user so each user's SSE stream only sees their positions.
-                // Pass the OCC symbol so the frontend can match it to position data.
-                const occSym = this._dxToOcc(ev.eventSymbol);
-                if (occSym) priceHub.emit(this.userId, occSym, mid);
-              }
+            let eventType, eventSymbol, bid, ask;
+
+            if (Array.isArray(ev)) {
+              // Compact format: [eventType, field0_value, field1_value, ...]
+              // Field order comes from FEED_CONFIG → this.schema.
+              eventType = ev[0];
+              const idx = this.schema[eventType];
+              if (!idx) continue;
+              // eventSymbol is always the first field in the schema (index 0 → ev[1])
+              eventSymbol = ev[(idx.eventSymbol ?? 0) + 1];
+              bid = parseFloat(ev[(idx.bidPrice  ?? -1) + 1] || 0);
+              ask = parseFloat(ev[(idx.askPrice  ?? -1) + 1] || 0);
+            } else {
+              // Full/object format (fallback)
+              eventType   = ev.eventType;
+              eventSymbol = ev.eventSymbol;
+              bid = parseFloat(ev.bidPrice || 0);
+              ask = parseFloat(ev.askPrice || 0);
+            }
+
+            if (eventType === 'Quote' && (bid > 0 || ask > 0)) {
+              const mid = bid && ask ? (bid + ask) / 2 : (bid || ask);
+              this.prices[eventSymbol] = mid;
+              const occSym = this._dxToOcc(eventSymbol);
+              if (occSym) priceHub.emit(this.userId, occSym, mid);
             }
           }
         }
