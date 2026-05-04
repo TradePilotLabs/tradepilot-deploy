@@ -1,4 +1,4 @@
-const { placeOrder, cancelOrder, getOrder, placeComplexOrder, cancelComplexOrder } = require('./tastyClient');
+const { placeOrder, cancelOrder, getOrder, placeComplexOrder, cancelComplexOrder, getOpenOrders } = require('./tastyClient');
 const { createTrade, closeTrade, cancelTrade, updateTradeEntryPrice } = require('../data/db');
 const { removePosition, updatePosition, incrDailyPnl } = require('../data/redis');
 
@@ -233,13 +233,12 @@ async function placeExitOrders({ userId, accountNumber, position }) {
  * would be "double-covered".
  */
 async function closePosition({ userId, accountNumber, position, exitReason, currentPrice }) {
-  // ── Cancel any existing exit orders before placing manual close ──
+  // ── Cancel tracked exit orders first ─────────────────────────
   if (position.complexOrderId) {
     try {
       await cancelComplexOrder(userId, accountNumber, position.complexOrderId);
       console.log(`[ORDER] Cancelled OCO complex order ${position.complexOrderId} before manual close`);
     } catch (err) {
-      // May already be filled/cancelled — log and continue
       console.warn(`[ORDER] Could not cancel OCO ${position.complexOrderId}: ${err.message}`);
     }
   }
@@ -253,10 +252,34 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
     }
   }
 
-  // ── Small delay to let TT process cancellations ──────────────
-  if (position.complexOrderId || position.stopOrderId) {
-    await new Promise(r => setTimeout(r, 500));
+  // ── Sweep ALL live orders for this symbol (catches untracked entry/OCO orders) ──
+  // TastyTrade rejects STC with a preflight error if any open order references
+  // the same position — including the original BTO if it hasn't been fully processed.
+  try {
+    const liveOrders = await getOpenOrders(userId, accountNumber);
+    const seen = new Set();
+    for (const o of liveOrders) {
+      const forSymbol = o.legs?.some(l => l.symbol === position.optionSymbol);
+      if (!forSymbol) continue;
+      const complexId = o['complex-order-id'];
+      if (complexId && !seen.has(complexId)) {
+        seen.add(complexId);
+        await cancelComplexOrder(userId, accountNumber, complexId).catch(e =>
+          console.warn(`[ORDER] Sweep: could not cancel complex ${complexId}: ${e.message}`)
+        );
+      } else if (!complexId && !seen.has(o.id)) {
+        seen.add(o.id);
+        await cancelOrder(userId, accountNumber, o.id).catch(e =>
+          console.warn(`[ORDER] Sweep: could not cancel order ${o.id}: ${e.message}`)
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[ORDER] Live order sweep failed for ${position.optionSymbol}: ${err.message}`);
   }
+
+  // ── Delay to let TT process all cancellations ─────────────────
+  await new Promise(r => setTimeout(r, 1000));
 
   const order = {
     'order-type':    'Market',

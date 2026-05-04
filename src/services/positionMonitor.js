@@ -1,6 +1,6 @@
 const { getAllOpenPositions, updatePosition } = require('../data/redis');
 const { getPositions, getOrder, placeOrder, cancelOrder } = require('./tastyClient');
-const { getClient: getDxFeedClient }         = require('./dxFeedClient');
+const { getClient: getDxFeedClient, priceHub } = require('./dxFeedClient');
 const { closePosition }                      = require('./orderPlacer');
 const { checkKillSwitch }                     = require('./killSwitch');
 const { getOrCreateSettings, getTastyTokens,
@@ -90,12 +90,16 @@ async function checkUserPositions(userId, positions) {
     console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);
   }
 
-  // Write current price to Redis immediately so dashboard reflects latest quote
+  // Write current price to Redis and push to SSE stream
   for (const pos of positions) {
     const price = priceMap[pos.optionSymbol];
-    if (price && price !== pos.currentPrice) {
-      await updatePosition(userId, pos.tradeId, { currentPrice: price });
-      pos.currentPrice = price;
+    if (price && price > 0) {
+      if (price !== pos.currentPrice) {
+        await updatePosition(userId, pos.tradeId, { currentPrice: price });
+        pos.currentPrice = price;
+      }
+      // Always emit so the SSE stream gets broker marks when dxFeed is quiet
+      priceHub.emit(userId, pos.optionSymbol, price);
     }
   }
 
