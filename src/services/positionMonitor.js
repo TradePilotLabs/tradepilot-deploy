@@ -312,17 +312,19 @@ async function updateTrailingStop({ userId, accountNumber, pos, newStop }) {
 }
 
 // Close a position in TradePilot records without placing a broker order.
-// Used when we know the broker position is already gone (expired, manual close).
+// Used when we know the broker position is already gone (expired, OCO fill, manual close at TT).
 async function closeLocalPosition({ userId, position, exitReason, exitPrice }) {
   const { closeTrade, updateTradeEntryPrice } = require('../data/db');
   const { removePosition, incrDailyPnl } = require('../data/redis');
-  const { calcPnl, tryCaptureFill } = require('./orderPlacer');
+  const { calcPnl } = require('./orderPlacer');
+  const tasty = require('./tastyClient');
+  const accountNumber = position.accountNumber;
 
   // Try to backfill entry price from TastyTrade order fill if missing
   let entryPrice = position.entryPrice;
-  if (!entryPrice && position.tastyOrderId && position.accountNumber) {
+  if (!entryPrice && position.tastyOrderId && accountNumber) {
     try {
-      const order = await require('./tastyClient').getOrder(userId, position.accountNumber, position.tastyOrderId);
+      const order = await tasty.getOrder(userId, accountNumber, position.tastyOrderId);
       const fill  = parseFloat(order?.['avg-fill-price'] || 0);
       if (fill > 0) {
         await updateTradeEntryPrice(position.tradeId, fill);
@@ -332,11 +334,50 @@ async function closeLocalPosition({ userId, position, exitReason, exitPrice }) {
     } catch {}
   }
 
-  const pnl = entryPrice ? calcPnl(entryPrice, exitPrice ?? 0, position.quantity) : 0;
-  await closeTrade(position.tradeId, { exitPrice: exitPrice ?? 0, exitReason, pnl });
+  // ── Fetch actual exit fill from TastyTrade (OCO bracket or stop order) ──
+  // When TastyTrade fires a TP/SL, the position disappears from the account but
+  // the fill price is on the order record. Prefer this over the mark price.
+  let actualExit = exitPrice; // fallback = last known price from priceMap
+  if (accountNumber) {
+    // Check the OCO complex order first (most common exit path)
+    if (position.complexOrderId) {
+      try {
+        const o = await tasty.getOrder(userId, accountNumber, position.complexOrderId);
+        const fill = extractFill(o);
+        if (fill > 0) { actualExit = fill; console.log(`[MONITOR] OCO fill captured: ${position.optionSymbol} @ $${fill}`); }
+      } catch {}
+    }
+    // Fall back to tracking the stop order if set separately
+    if (!actualExit && position.stopOrderId) {
+      try {
+        const o = await tasty.getOrder(userId, accountNumber, position.stopOrderId);
+        const fill = extractFill(o);
+        if (fill > 0) { actualExit = fill; console.log(`[MONITOR] Stop fill captured: ${position.optionSymbol} @ $${fill}`); }
+      } catch {}
+    }
+  }
+
+  const pnl = entryPrice ? calcPnl(entryPrice, actualExit ?? 0, position.quantity) : 0;
+  await closeTrade(position.tradeId, { exitPrice: actualExit ?? 0, exitReason, pnl });
   await removePosition(userId, position.tradeId);
   await incrDailyPnl(userId, pnl);
-  console.log(`[MONITOR] Local close: ${position.optionSymbol} | Reason: ${exitReason} | P&L: $${pnl.toFixed(2)}`);
+  console.log(`[MONITOR] Local close: ${position.optionSymbol} | Reason: ${exitReason} | Exit: $${actualExit} | P&L: $${pnl.toFixed(2)}`);
+}
+
+// Pull the fill price out of any TastyTrade order response structure.
+function extractFill(order) {
+  if (!order) return 0;
+  // Simple orders: avg-fill-price at top level
+  const avg = parseFloat(order?.['avg-fill-price'] || 0);
+  if (avg > 0) return avg;
+  // Leg-level fills
+  for (const leg of (order?.legs || [])) {
+    for (const fill of (leg?.fills || [])) {
+      const p = parseFloat(fill?.['fill-price'] || 0);
+      if (p > 0) return p;
+    }
+  }
+  return 0;
 }
 
 // Extract YYMMDD from OCC symbol and check if the expiry date is in the past.
