@@ -166,18 +166,16 @@ async function run() {
         [trade.id, fillPrice, newPnl]
       );
 
-      // Adjust daily_pnl_summary
+      // Adjust daily_pnl running total
+      const oldWin = parseFloat(trade.pnl) > 0 ? 1 : 0;
+      const newWin = newPnl > 0 ? 1 : 0;
       await pool.query(
-        `UPDATE daily_pnl_summary
-            SET gross_pnl    = gross_pnl    + $2,
-                net_pnl      = net_pnl      + $2,
-                winning_trades = CASE WHEN $3 > 0 THEN winning_trades + 1
-                                      WHEN $4 THEN GREATEST(winning_trades - 1, 0) ELSE winning_trades END,
-                losing_trades  = CASE WHEN $3 < 0 THEN losing_trades  + 1
-                                      WHEN $5 THEN GREATEST(losing_trades  - 1, 0) ELSE losing_trades  END
-          WHERE user_id = $1 AND date = CURRENT_DATE`,
-        [userId, pnlDiff, newPnl > 0, parseFloat(trade.pnl) > 0 && newPnl <= 0,
-                                       parseFloat(trade.pnl) < 0 && newPnl >= 0]
+        `INSERT INTO daily_pnl (user_id, date, total_pnl, trade_count, win_count)
+             VALUES ($1, CURRENT_DATE, $2, 0, $3)
+         ON CONFLICT (user_id, date) DO UPDATE
+             SET total_pnl = daily_pnl.total_pnl + $2,
+                 win_count = daily_pnl.win_count  + $3`,
+        [userId, pnlDiff, newWin - oldWin]
       );
 
       console.log(`  ✓ [${sym}] Updated exit $${trade.exit_price} → $${fillPrice} | P&L: $${trade.pnl} → $${newPnl}`);
