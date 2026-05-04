@@ -1,6 +1,6 @@
 {
   "name": "@tradepilotlabs/ats",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TradePilot — Automated Options Trading Server",
   "main": "dist/index.js",
   "files": [
