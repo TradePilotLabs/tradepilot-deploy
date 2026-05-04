@@ -28,7 +28,7 @@ async function runMonitorCycle() {
     if (!positions.length) {
       // Log once per minute so we can see the monitor is alive but finding nothing
       if (Date.now() % 60000 < 5000) {
-        console.log('[MONITOR] No open positions in Redis (KEYS position:*:*)');
+        console.log('[MONITOR] No open positions in Redis');
       }
       return;
     }

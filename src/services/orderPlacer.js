@@ -298,19 +298,18 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
   console.log(`[ORDER] Closing ${position.quantity}x ${position.optionSymbol} | Reason: ${exitReason}`);
 
   let closedAtBroker = false;
+  let closeOrderId   = null;
   try {
-    await placeOrder(userId, accountNumber, order);
+    const placed = await placeOrder(userId, accountNumber, order);
+    closeOrderId  = placed?.id || placed?.['order-id'] || null;
     closedAtBroker = true;
   } catch (err) {
     const msg = err.message || '';
     if (msg.includes('uncovered') || msg.includes('not approved')) {
-      // Position already gone at broker (expired / manually closed there)
       console.warn(`[ORDER] Close order rejected — position already gone at broker: ${msg}`);
-      closedAtBroker = true; // treat as closed since it no longer exists
+      closedAtBroker = true;
     } else if (msg.includes('preflight')) {
-      // Preflight failed — log the full error so we can debug
       console.error(`[ORDER] Close order preflight failed for ${position.optionSymbol}: ${msg}`);
-      // Don't clean up locally — position still open at TT
       throw err;
     } else {
       console.error(`[ORDER] Close order failed for ${position.optionSymbol}:`, msg);
@@ -318,8 +317,27 @@ async function closePosition({ userId, accountNumber, position, exitReason, curr
     }
   }
 
-  const exitPrice = currentPrice || position.entryPrice;
-  const pnl       = calcPnl(position.entryPrice, exitPrice, position.quantity);
+  // ── Capture actual fill price from the STC order ──────────────
+  // Wait up to ~4s for the market order to fill, then read the fill price.
+  let exitPrice = currentPrice || position.currentPrice || position.entryPrice;
+  if (closeOrderId) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const filled = await getOrder(userId, accountNumber, closeOrderId);
+      const fill   = parseFloat(
+        filled?.legs?.[0]?.fills?.[0]?.['fill-price'] ||
+        filled?.['avg-fill-price'] || 0
+      );
+      if (fill > 0) {
+        exitPrice = fill;
+        console.log(`[ORDER] Close fill captured: ${position.optionSymbol} @ $${fill}`);
+      }
+    } catch (e) {
+      console.warn(`[ORDER] Could not read close fill for order ${closeOrderId}: ${e.message}`);
+    }
+  }
+
+  const pnl = calcPnl(position.entryPrice, exitPrice, position.quantity);
 
   await closeTrade(position.tradeId, { exitPrice, exitReason, pnl });
   await removePosition(userId, position.tradeId);
