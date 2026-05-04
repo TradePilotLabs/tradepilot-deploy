@@ -25,7 +25,14 @@ function stopPositionMonitor() {
 async function runMonitorCycle() {
   try {
     const positions = await getAllOpenPositions();
-    if (!positions.length) return;
+    if (!positions.length) {
+      // Log once per minute so we can see the monitor is alive but finding nothing
+      if (Date.now() % 60000 < 5000) {
+        console.log('[MONITOR] No open positions in Redis (KEYS position:*:*)');
+      }
+      return;
+    }
+    console.log(`[MONITOR] Cycle: ${positions.length} position(s) found`);
 
     const byUser = {};
     for (const pos of positions) {
@@ -84,7 +91,10 @@ async function checkUserPositions(userId, positions) {
     for (const bp of brokerPositions) {
       const sym  = bp['symbol'];
       const mark = parseFloat(bp['mark'] || bp['mark-price'] || bp['close-price'] || 0);
-      if (sym && mark > 0 && !priceMap[sym]) priceMap[sym] = mark;
+      if (sym && mark > 0 && !priceMap[sym]) {
+        priceMap[sym] = mark;
+        console.log(`[MONITOR] Broker mark for ${sym}: $${mark}`);
+      }
     }
   } catch (err) {
     console.error(`[MONITOR] Broker position fetch failed for ${userId}:`, err.message);

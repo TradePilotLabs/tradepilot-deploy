@@ -61,12 +61,25 @@ async function getOpenPositionsForUser(userId) {
   return positions.filter(Boolean);
 }
 
-// Returns ALL open positions across ALL users (for monitor loop)
+// Returns ALL open positions across ALL users (for monitor loop).
+// Uses the per-user index sets rather than KEYS pattern scan so we don't
+// miss positions if KEYS returns an incomplete result set on large Redis instances.
 async function getAllOpenPositions() {
-  const keys = await getRedis().keys('position:*:*');
-  if (!keys.length) return [];
-  const raws = await getRedis().mget(...keys);
-  return raws.filter(Boolean).map((r) => JSON.parse(r));
+  const redis = getRedis();
+  // Find all user index keys e.g. "positions:<userId>"
+  const indexKeys = await redis.keys('positions:*');
+  if (!indexKeys.length) return [];
+
+  const all = [];
+  for (const indexKey of indexKeys) {
+    const userId   = indexKey.slice('positions:'.length);
+    const tradeIds = await redis.smembers(indexKey);
+    for (const tradeId of tradeIds) {
+      const raw = await redis.get(`position:${userId}:${tradeId}`);
+      if (raw) all.push(JSON.parse(raw));
+    }
+  }
+  return all;
 }
 
 // ─── Daily P&L cache (fast kill-switch check) ────────────────
