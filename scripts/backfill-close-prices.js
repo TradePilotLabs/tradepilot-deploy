@@ -11,15 +11,53 @@
 require('dotenv').config();
 const { Pool }   = require('pg');
 const axios      = require('axios');
+const crypto     = require('crypto');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
+function decrypt(encryptedStr) {
+  if (!encryptedStr) return null;
+  const secret = process.env.ENCRYPTION_KEY;
+  if (!secret) throw new Error('ENCRYPTION_KEY not set');
+  const [ivHex, authTagHex, encrypted] = encryptedStr.split(':');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(secret, 'hex'), Buffer.from(ivHex, 'hex'));
+  decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+  let out = decipher.update(encrypted, 'hex', 'utf8');
+  out += decipher.final('utf8');
+  return out;
+}
+
 async function getTastyTokens(userId) {
   const { rows } = await pool.query(
-    `SELECT access_token, account_number FROM tastytrade_tokens WHERE user_id = $1`,
+    `SELECT access_token, refresh_token, expires_at, account_number,
+            client_id_encrypted, client_secret_encrypted
+     FROM tastytrade_tokens WHERE user_id = $1`,
     [userId]
   );
   return rows[0] || null;
+}
+
+async function refreshIfNeeded(tokens, userId) {
+  // Refresh if expired or within 60s of expiry
+  if (tokens.expires_at && new Date(tokens.expires_at) > new Date(Date.now() + 60000)) {
+    return tokens.access_token;
+  }
+  const clientId     = decrypt(tokens.client_id_encrypted);
+  const clientSecret = decrypt(tokens.client_secret_encrypted);
+  if (!clientId || !clientSecret) throw new Error('Client credentials missing — reconnect TastyTrade in Brokers settings');
+  const res = await axios.post('https://api.tastytrade.com/oauth/token',
+    new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId,
+      client_secret: clientSecret, refresh_token: tokens.refresh_token }),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+  const { access_token, expires_in } = res.data;
+  const expiresAt = new Date(Date.now() + expires_in * 1000);
+  await pool.query(
+    `UPDATE tastytrade_tokens SET access_token=$2, expires_at=$3 WHERE user_id=$1`,
+    [userId, access_token, expiresAt]
+  );
+  console.log('  Token refreshed.');
+  return access_token;
 }
 
 async function getTastyOrders(accessToken, accountNumber) {
@@ -79,9 +117,13 @@ async function run() {
       continue;
     }
 
+    let accessToken;
+    try { accessToken = await refreshIfNeeded(tokens, userId); }
+    catch (err) { console.error(`  [user ${userId}] Token refresh failed: ${err.message}`); continue; }
+
     let orders = [];
     try {
-      orders = await getTastyOrders(tokens.access_token, tokens.account_number);
+      orders = await getTastyOrders(accessToken, tokens.account_number);
       console.log(`  [user ${userId}] Fetched ${orders.length} filled order(s) from TastyTrade`);
     } catch (err) {
       console.error(`  [user ${userId}] Failed to fetch orders: ${err.message}`);
