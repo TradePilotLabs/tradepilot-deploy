@@ -49,9 +49,9 @@ async function refreshIfNeeded(tokens, userId) {
 }
 
 async function getTastyOrders(accessToken, accountNumber) {
-  // Fetch today's filled orders
+  // Fetch ALL of today's orders (any status) so we can inspect what actually happened
   const today = new Date().toISOString().slice(0, 10);
-  const url   = `https://api.tastytrade.com/accounts/${accountNumber}/orders?status[]=filled&start-date=${today}`;
+  const url   = `https://api.tastytrade.com/accounts/${accountNumber}/orders?start-date=${today}`;
   const res   = await axios.get(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   return res.data?.data?.items || [];
 }
@@ -116,6 +116,16 @@ async function run() {
     } catch (err) {
       console.error(`  [user ${userId}] Failed to fetch orders: ${err.message}`);
       continue;
+    }
+
+    // Dump all orders so we can see what TastyTrade has
+    console.log(`  All orders today:`);
+    for (const o of orders) {
+      const sym    = o.legs?.[0]?.symbol || '?';
+      const action = o.legs?.[0]?.action || o.legs?.[0]?.['action-description'] || '?';
+      const status = o.status || '?';
+      const fill   = extractFill(o);
+      console.log(`    [${status}] ${action} ${sym} fill=$${fill} id=${o.id}`);
     }
 
     // Build a map: optionSymbol → fill price (STC only)
