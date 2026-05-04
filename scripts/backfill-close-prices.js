@@ -9,23 +9,11 @@
  */
 
 require('dotenv').config();
-const { Pool }   = require('pg');
-const axios      = require('axios');
-const crypto     = require('crypto');
+const { Pool }      = require('pg');
+const axios         = require('axios');
+const { decrypt }   = require('../src/services/encryption');
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-
-function decrypt(encryptedStr) {
-  if (!encryptedStr) return null;
-  const secret = process.env.ENCRYPTION_KEY;
-  if (!secret) throw new Error('ENCRYPTION_KEY not set');
-  const [ivHex, authTagHex, encrypted] = encryptedStr.split(':');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(secret, 'hex'), Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
-  let out = decipher.update(encrypted, 'hex', 'utf8');
-  out += decipher.final('utf8');
-  return out;
-}
 
 async function getTastyTokens(userId) {
   const { rows } = await pool.query(
