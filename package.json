@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "TradePilot automated trading server — deploy to Heroku",
   "scripts": {
-    "start": "node node_modules/@tradepilot/ats/dist/index.js"
+    "start": "node node_modules/@tradepilotlabs/ats/dist/index.js"
   },
   "dependencies": {
     "@tradepilotlabs/ats": "^1.1.36"
