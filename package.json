@@ -6,7 +6,7 @@
     "start": "node node_modules/@tradepilotlabs/ats/dist/index.js"
   },
   "dependencies": {
-    "@tradepilotlabs/ats": "^1.1.56"
+    "@tradepilotlabs/ats": "^1.1.57"
   },
   "engines": {
     "node": "18.x"
